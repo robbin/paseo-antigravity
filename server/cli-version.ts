@@ -1,6 +1,10 @@
 import { execCommand } from "@getpaseo/plugin/server";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 
+export function cliVersion(stdout: string): string | undefined {
+  return /(?:^|[^\w.])v?(\d+\.\d+\.\d+)(?=$|[^\d.])/.exec(stdout)?.[1];
+}
+
 export const MINIMUM_VERSION_ERROR = "需要官方 agy 1.5.15 或更新版本。";
 export async function checkCliVersion(launch: ProviderLaunch, timeout = 10000): Promise<string> {
   const prefix = launch.args.indexOf("acp");
@@ -13,10 +17,10 @@ export async function checkCliVersion(launch: ProviderLaunch, timeout = 10000): 
   } catch {
     throw new Error("CLI 版本检查失败或超过启动时限。请检查可执行文件与登录环境。");
   }
-  const version = /\b(\d+)\.(\d+)\.(\d+)\b/.exec(stdout);
-  if (!version || Number(version[1]) < 1 ||
-    (Number(version[1]) === 1 && (Number(version[2]) < 5 ||
-      (Number(version[2]) === 5 && Number(version[3]) < 15))))
+  const version = cliVersion(stdout);
+  const [major, minor, patch] = (version ?? "").split(".").map(Number);
+  if (!version || major < 1 ||
+    (major === 1 && (minor < 5 || (minor === 5 && patch < 15))))
     throw new Error(MINIMUM_VERSION_ERROR);
-  return version[0];
+  return version;
 }

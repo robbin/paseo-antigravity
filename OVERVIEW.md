@@ -1,13 +1,13 @@
 # Better Paseo Antigravity
 
-Built for long-session reliability, not feature bloat. Better Paseo Antigravity wraps the official, locally signed-in `agy acp` CLI through Paseo's ACP SDK to keep multi-hour agent runs stable—without modifying your CLI login, touching private session databases, or reinventing the protocol.
+Built for long-session reliability, not feature bloat. Better Paseo Antigravity wraps the official, locally signed-in `agy acp` CLI through Paseo's ACP SDK to keep multi-hour agent runs stable without modifying your CLI login, touching private session databases, or reinventing the protocol.
 
 ## Reliability first
 
 | Common failure mode | How Better Paseo Antigravity handles it |
 | --- | --- |
-| Long-running tools or approvals killed for silence | Waits silently during idle periods and quiet turns without inserting no-progress notices. Active foreground tools and pending approvals are never terminated solely for silence; genuinely stuck turns with no active tools or approvals are closed after 15 minutes of no progress. |
-| Hung stop/cancel requests and orphaned processes | Targets only the in-flight requests and foreground tools active at cancel time, each with a 5-second fallback deadline. Shutdown runs a time-bounded graceful ACP close followed by detached POSIX process-group cleanup. Later requests never inherit an old cancel deadline. |
+| Long-running tools or approvals killed for silence | Waits silently without no-progress notices or termination based only on silence. Completed tool calls can leave background work running; use Stop if a session appears stuck. |
+| Hung stop/cancel requests and orphaned processes | Targets only the in-flight requests, foreground tools and approvals active at cancel time (including restored approvals without an active turn), each with a 5-second fallback deadline. Shutdown runs a time-bounded graceful ACP close followed by detached POSIX process-group cleanup. Later requests never inherit an old cancel deadline. |
 | Swallowed root-cause errors on disconnect | Captures the underlying transport, watchdog, exit-code, or signal diagnostics before closing the stream so generic SDK errors do not hide the real cause. |
 | Truncated or stalled large history replays | Follows the native `session/load` boundary in `agy >= 1.5.15`, preserving wire order, fragmented UTF-8 decoding, and backpressure without waiting for stream silence. Live updates appear immediately after restore without requiring a new prompt. |
 | False timeouts after laptop sleep/wake | Detects host suspend and clock jumps (>5s timer gap), rebasing pre-sleep work (including work started in the final timer slice before suspend) while keeping fresh post-wake deadlines intact. |
@@ -25,7 +25,9 @@ Select Better Paseo Antigravity when creating a new agent. Existing sessions cre
 
 Provider status checks verify the `agy` CLI version and perform an ACP handshake within a shared ~95-second cold-start budget. Recognized sign-in failures are reported without printing authorization URLs. Account eligibility and model access are still verified when opening a session. Usage quotas are queried through `agy -p /usage --output-format json` using your existing CLI login and environment.
 
-Permission choices use the Paseo ACP SDK; complex forms and free-text subagent answers remain unverified. Full access automatically approves eligible tool requests, not arbitrary questions. Command names without classification metadata remain unclassified rather than being assumed to be skills.
+Full access is an SDK auto-approval mode backed by native default, not native Auto. Ambiguous allow options (including repeated allow_always kinds) fall back to manual approval. The current SDK does not forward permission response message/updatedInput fields; free-text subagent answers are unsupported. Concurrent pending approvals with the same toolCallId in one native session may collide. Steering is available only in SDK-deferred turns, not necessarily while a native background prompt remains open. Command names without classification metadata remain unclassified rather than being assumed to be skills.
+
+Usage queries include session environment overrides. Custom ACP `--app-data-dir` / `--gemini-dir` / `--cli_dir_name` (including underscore aliases) configurations currently report an unsupported-query error instead of querying the default account. API Key no-quota classification and host/UI dismissal after a restored-approval Stop timeout remain unverified.
 
 ## Privacy and boundaries
 

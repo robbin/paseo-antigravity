@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Watch } from "../server/watch.ts";
-const limits = { startup: 90, silent: 150, cancel: 5 };
+const limits = { startup: 90, cancel: 5 };
 const prompt = (w: Watch, id = 1, at = 0) =>
   w.observe(
     "out",
@@ -39,7 +39,7 @@ test("host sleep rebases old clocks but not new cancellation", () => {
   prompt(w);
   w.resume(10000, 10);
   assert.equal(w.check(10001).failure, undefined);
-  assert.ok(w.check(10150).failure);
+  assert.deepEqual(w.check(10150), {});
   const next = new Watch(limits);
   prompt(next);
   cancel(next, 9999);
@@ -55,7 +55,10 @@ test("SDK terminalization clears ghost tools and ignores their late echoes", () 
   tool(w, "in_progress", 4);
   assert.deepEqual(w.check(40), {});
   prompt(w, 2, 50);
-  assert.ok(w.check(201).failure);
+  assert.deepEqual(w.check(201), {});
+  cancel(w, 202);
+  response(w, 2, "cancelled", 203);
+  assert.deepEqual(w.check(207), {});
 });
 test("new steering prompt must not disarm an outstanding cancellation", () => {
   const w = new Watch(limits);
@@ -83,7 +86,7 @@ test("cancel deadline clears when post-response tools all finish", () => {
   tool(w, "completed", 3);
   assert.equal(w.check(7).failure, undefined);
 });
-test("load replay tools do not block later inactivity detection", () => {
+test("load replay tools do not become cancellation targets", () => {
   const w = new Watch(limits);
   w.observe(
     "out",
@@ -100,7 +103,10 @@ test("load replay tools do not block later inactivity detection", () => {
   // History ends at the response; post-response tools would be live work.
   assert.deepEqual(w.check(40), {});
   prompt(w, 1, 50);
-  assert.ok(w.check(201).failure);
+  assert.deepEqual(w.check(201), {});
+  cancel(w, 202);
+  response(w, 1, "cancelled", 203);
+  assert.deepEqual(w.check(207), {});
 });
 test("SDK terminal event after cancellation clears ghost tools", () => {
   const w = new Watch(limits);
@@ -110,7 +116,10 @@ test("SDK terminal event after cancellation clears ghost tools", () => {
   w.finishTool("old"); // SDK terminalizeTransientItems emits the canceled tool.
   assert.deepEqual(w.check(40), {});
   prompt(w, 2, 50);
-  assert.ok(w.check(201).failure);
+  assert.deepEqual(w.check(201), {});
+  cancel(w, 202);
+  response(w, 2, "cancelled", 203);
+  assert.deepEqual(w.check(207), {});
 });
 test("SDK terminal event after RPC error clears ghost tools", () => {
   const w = new Watch(limits);
@@ -123,7 +132,10 @@ test("SDK terminal event after RPC error clears ghost tools", () => {
   );
   w.finishTool("old"); // Failed turn has an explicit SDK tool terminal event.
   prompt(w, 2, 50);
-  assert.ok(w.check(201).failure);
+  assert.deepEqual(w.check(201), {});
+  cancel(w, 202);
+  response(w, 2, "cancelled", 203);
+  assert.deepEqual(w.check(207), {});
 });
 test("no progress notices across silence intervals or subsequent turns", () => {
   const w = new Watch(limits);
@@ -136,5 +148,5 @@ test("no progress notices across silence intervals or subsequent turns", () => {
   for (const at of [10032, 20000]) assert.deepEqual(w.check(at), {});
   prompt(w, 2, 20001);
   assert.deepEqual(w.check(20031), {});
-  assert.match(w.check(20151).failure!, /无进展/);
+  assert.deepEqual(w.check(90000000), {});
 });

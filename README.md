@@ -12,7 +12,7 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 | Failure mode | How Better Paseo Antigravity handles it |
 | --- | --- |
-| Silent stalls vs. long-running work | Waits silently without no-progress notices. Active foreground tools and pending approvals are never killed solely for silence; genuinely stuck generation with no active tools or approvals is closed after 15 minutes. |
+| Silent stalls vs. long-running work | Waits silently without no-progress notices or silence-only termination. Completed tools can leave native background work running; use Stop when a session appears stuck. |
 | Hung stop/cancel & orphaned processes | Enforces a 5-second fallback deadline per canceled target, followed by time-bounded graceful ACP close and detached POSIX process-group cleanup (`SIGTERM` → 1s grace → `SIGKILL`). |
 | Cancel races & stale tool tracking | Ignores idle cancels, isolates `session/load` replay from live tracking, scopes cancel deadlines per target, and retires tools only on explicit tool-terminal events. |
 | Swallowed root-cause errors | Records transport, watchdog, exit-code, and signal failure details before closing the stream so generic SDK errors never hide the real cause. |
@@ -23,10 +23,10 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 - **Quiet waiting without premature kills**
   - Waits silently during idle periods and quiet active turns, without inserting no-progress notices.
-  - Distinguishes active foreground tools and pending permission approvals from genuine stalls—long-running tools and pending approvals are never killed solely for being quiet.
-  - Closes genuinely stuck generation processes after 15 minutes of silence (only when no foreground tools or approvals are active) and never silently resends prompts.
+  - Does not infer deadlock from silence or completed tool calls; native background work may still be running.
+  - Retains startup/control-request deadlines, explicit Stop fallback and transport-error cleanup. A silent deadlock requires manual Stop; prompts are never resent automatically.
 - **Reliable cancellation and process-group cleanup**
-  - Enforces a 5-second fallback deadline if `session/cancel` does not terminate an active turn.
+  - Enforces a 5-second fallback deadline for canceled prompts, foreground tools and approvals, including restored approvals without an active turn.
   - Performs a time-bounded graceful ACP close (5-second grace) followed by detached POSIX process-group cleanup (`SIGTERM` with 1-second grace, then `SIGKILL`).
   - Handles `ESRCH` and `EPERM` races safely so exited leaders never cause infinite waits or stray signals.
 - **Cancel race and stale tool-call protection**
@@ -90,7 +90,9 @@ paseo plugin update better-paseo-antigravity
 ## Known Boundaries
 
 - Earlier than `agy 1.5.15` is unsupported; provider status and each new connection check the minimum version. `1.5.16` is recommended for its upstream subagent approval/question forwarding fix, but is not required.
-- Permission options use the pinned Paseo ACP SDK. Complex forms and free-text subagent answers have not been validated; `Full access` is tool auto-approval, not a guarantee of unattended question answering or native Auto-mode equivalence.
+- Full access is an SDK auto-approval mode backed by native default, not native Auto. Ambiguous allow options (including repeated allow_always kinds) fall back to manual approval. The current SDK does not forward permission response message/updatedInput fields; free-text subagent answers are unsupported. Concurrent pending approvals with the same toolCallId in one native session may collide. Steering is available only in SDK-deferred turns, not necessarily while a native background prompt remains open.
+- Usage queries merge session environment overrides. Custom ACP `--app-data-dir` / `--gemini-dir` / `--cli_dir_name` (including underscore aliases) configurations currently report a safe query error rather than querying the default account. API Key no-quota classification is not yet verified; exit code 2 alone is not treated as evidence of no quota.
+- On restored-approval Stop timeout, the SDK releases permission promises and emits runtime failure. Actual host/UI dismissal has not been validated.
 - Commands remain executable; unknown command/skill names are left unclassified when ACP provides no provenance.
 - Does not create a custom OAuth flow, proxy, or credential store; sign in using the official `agy` CLI on the host.
 - Does not read private Antigravity SQLite databases, inboxes, or raw transcripts.

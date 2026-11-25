@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Watch } from "../server/watch.ts";
 import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
-const limits = { startup: 90, silent: 150, cancel: 5 };
+const limits = { startup: 90, cancel: 5 };
 const out = (
   w: Watch,
   id: number,
@@ -53,11 +53,13 @@ const cancel = (w: Watch, at = 0) =>
     at,
   );
 
-test("silent prompt stays quiet until a bounded failure", () => {
+test("silent prompt has no automatic inactivity deadline", () => {
   const w = new Watch(limits);
   out(w, 1);
   for (const at of [30, 60, 149]) assert.deepEqual(w.check(at), {});
-  assert.match(w.check(150).failure!, /无进展/);
+  assert.deepEqual(w.check(90000000), {});
+  cancel(w, 90000001);
+  assert.match(w.check(90000006).failure!, /取消/);
 });
 test("normal long tools are never killed for silence", () => {
   const w = new Watch(limits);
@@ -108,7 +110,7 @@ test("permission wait pauses silence but never pauses cancellation", () => {
   cancel(w, 1001);
   assert.match(w.check(1006).failure!, /取消/);
 });
-test("permission answer resets inactivity baseline", () => {
+test("answered permission does not start a silence deadline", () => {
   const w = new Watch(limits);
   out(w, 1);
   w.observe(
@@ -123,15 +125,15 @@ test("permission answer resets inactivity baseline", () => {
   );
   w.observe("out", { jsonrpc: "2.0", id: "p", result: {} }, 1000);
   assert.equal(w.check(1001).failure, undefined);
-  assert.ok(w.check(1150).failure);
+  assert.deepEqual(w.check(90000000), {});
 });
-test("other sessions cannot keep silent prompt alive", () => {
+test("unrelated session activity does not affect a silent prompt", () => {
   const w = new Watch(limits);
   out(w, 1);
   update(w, "alien", "in_progress", 149, "other");
-  assert.ok(w.check(150).failure);
+  assert.deepEqual(w.check(90000000), {});
 });
-test("usage heartbeats do not reset silence", () => {
+test("usage heartbeats are not needed to keep a prompt alive", () => {
   const w = new Watch(limits);
   out(w, 1);
   w.observe(
@@ -143,9 +145,9 @@ test("usage heartbeats do not reset silence", () => {
     },
     149,
   );
-  assert.ok(w.check(150).failure);
+  assert.deepEqual(w.check(90000000), {});
 });
-test("completed and detached tools do not block silent detection", () => {
+test("completed and detached tools do not imply background work has ended", () => {
   for (const detached of [false, true]) {
     const w = new Watch(limits);
     out(w, 1);
@@ -157,7 +159,7 @@ test("completed and detached tools do not block silent detection", () => {
       "s",
       detached ? { rawInput: { IsDaemon: true } } : {},
     );
-    assert.ok(w.check(151).failure);
+    assert.deepEqual(w.check(90000000), {});
   }
 });
 test("initialize and model selection also have deadlines", () => {

@@ -16,7 +16,7 @@ import {
 import { vendor, options } from "./vendor";
 import { defaults, type Limits } from "./watch";
 import { normalizeSessionCwds } from "./session-cwd";
-import { checkCliVersion } from "./cli-version";
+import { checkCliVersion, cliVersion } from "./cli-version";
 
 export function provider(
   testOptions: {
@@ -39,18 +39,22 @@ export function provider(
       async inspect({ launch, signal }) {
         if (!launch?.resolved) return { status: "not_installed" };
         const prefix = launch.args.indexOf("acp");
-        const { stdout } = await execCommand(
-          launch.command,
-          [
-            ...(prefix < 0 ? launch.args : launch.args.slice(0, prefix)),
-            "--version",
-          ],
-          { env: launch.env, signal, timeout: 10000, maxBuffer: 8192 },
-        );
-        return {
-          status: "installed",
-          version: /\b\d+\.\d+\.\d+\b/.exec(stdout)?.[0],
-        };
+        try {
+          const { stdout } = await execCommand(
+            launch.command,
+            [...(prefix < 0 ? launch.args : launch.args.slice(0, prefix)), "--version"],
+            { env: launch.env, signal, timeout: 10000, maxBuffer: 8192 },
+          );
+          return { status: "installed", version: cliVersion(stdout) };
+        } catch {
+          // Preserve cancellation without exposing the caller's reason or exec output.
+          if (signal.aborted) {
+            const error = new Error("CLI installation inspection cancelled.");
+            error.name = "AbortError";
+            throw error;
+          }
+          throw new Error("CLI installation inspection failed or timed out.");
+        }
       },
     },
     async status({ launch }) {
@@ -127,6 +131,14 @@ export function provider(
       const listeners = new Set<(e: ProviderEvent) => void>();
       const transports = new Map<string, OwnedTransport>();
       const failures = new Map<string, string>();
+      // send() acknowledges admission, not execution. prompt_result settles
+      // each queued request, including failures reported asynchronously.
+      const replacements = new Map<string, Set<string>>();
+      const forgetReplacement = (sessionId: string, messageId: string) => {
+        const pending = replacements.get(sessionId);
+        pending?.delete(messageId);
+        if (!pending?.size) replacements.delete(sessionId);
+      };
       let closed = false;
       let connectionClosing: Promise<void> | undefined;
       const emit = (e: ProviderEvent) => {
@@ -177,6 +189,10 @@ export function provider(
         throw e;
       }
       const off = core.onEvent((e) => {
+        if (e.type === "session.prompt_result")
+          forgetReplacement(e.sessionId, e.clientMessageId);
+        if (e.type === "session.closed" || e.type === "session.runtime_failed")
+          replacements.delete(e.sessionId);
         // Paseo validates the import directory before sending session.open.
         if (e.type === "sessions")
           e = {
@@ -208,6 +224,9 @@ export function provider(
           if (e.state === "started") watch?.startTurn(e.turnId);
           else if (watch?.turn?.turnId === e.turnId) {
             const t = watch.turn;
+            // A successor can retire a deferred turn without wire cancel. Read
+            // the queue at settlement, not when callers enqueue against an old turn.
+            t.replaced ||= (replacements.get(e.sessionId)?.size ?? 0) > 0;
             console.log("[antigravity:turn-end]", JSON.stringify({ sessionId: e.sessionId,
               state: e.state, ...t, endedAt: Date.now() }));
             const empty = !t.text && !t.results;
@@ -247,14 +266,16 @@ export function provider(
         },
         send(input: ProviderInput) {
           if (closed) return Promise.reject(new Error("Provider 已关闭。"));
-          // A replacement may complete a deferred turn without sending wire cancel.
-          if (input.type === "session.interrupt" ||
-              (input.type === "session.prompt" && input.prompt.delivery !== "steer")) {
+          if (input.type === "session.interrupt") {
             const turn = transports.get(input.sessionId)?.watch.turn;
-            if (turn) {
-              if (input.type === "session.interrupt") turn.canceled = true;
-              else turn.replaced = true;
-            }
+            if (turn) turn.canceled = true;
+          }
+          const replacement = input.type === "session.prompt" && input.prompt.delivery !== "steer"
+            ? { sessionId: input.sessionId, id: input.prompt.clientMessageId } : undefined;
+          if (replacement) {
+            let pending = replacements.get(replacement.sessionId);
+            if (!pending) replacements.set(replacement.sessionId, pending = new Set());
+            pending.add(replacement.id);
           }
           const context: Context =
             input.type === "session.open"
@@ -267,7 +288,15 @@ export function provider(
                   cwd: "cwd" in input && input.cwd ? input.cwd : homedir(),
                   env: {},
                 };
-          return scope.run(context, () => core.send(input));
+          try {
+            return scope.run(context, () => core.send(input)).catch(error => {
+              if (replacement) forgetReplacement(replacement.sessionId, replacement.id);
+              throw error;
+            });
+          } catch (error) {
+            if (replacement) forgetReplacement(replacement.sessionId, replacement.id);
+            return Promise.reject(error);
+          }
         },
         close() {
           return (connectionClosing ??= (async () => {
@@ -295,6 +324,7 @@ export function provider(
               owned.clear();
               transports.clear();
               failures.clear();
+              replacements.clear();
             }
             // Do not wait indefinitely for an SDK operation stuck outside the transport.
             void graceful.catch(() => {});

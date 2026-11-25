@@ -207,16 +207,20 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       pending = undefined;
       return;
     }
-    if (["content-shell", "content-mcp", "content-diff", "content-native", "content-cleared"].includes(text)) {
+    if (["content-shell", "content-mcp", "content-diff", "content-native", "content-cleared", "content-read", "content-search", "content-edit"].includes(text)) {
       const shell = ["content-shell", "content-native", "content-cleared"].includes(text), diff = text === "content-diff";
       update({
         sessionUpdate: "tool_call",
         toolCallId: "content-tool",
-        name: shell ? "run_command" : diff ? "edit_file" : "mcp_paseo_fixture",
+        name: shell ? "run_command" : (diff || text === "content-edit") ? "edit_file" :
+          text === "content-read" ? "read_file" : text === "content-search" ? "search_web" : "mcp_paseo_fixture",
         title: "fixture",
-        kind: shell ? "execute" : diff ? "edit" : "other",
+        kind: shell ? "execute" : (diff || text === "content-edit") ? "edit" :
+          text === "content-read" ? "read" : text === "content-search" ? "search" : "other",
         status: "in_progress",
-        rawInput: shell ? { CommandLine: "printf fixture" } : {},
+        rawInput: shell ? { CommandLine: "printf fixture" } : text === "content-read" ? {Path:"/tmp/read"} :
+          text === "content-search" ? {query:"fixture"} : (diff || text === "content-edit") ?
+            {Path:"/tmp/edit",Target:"input-before",Replacement:""} : {},
         ...(text === "content-native" ? { rawOutput: { output: "native", exit_code: 0 } } : {}),
       });
       update({

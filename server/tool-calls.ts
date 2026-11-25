@@ -20,6 +20,18 @@ const fileWrite = z.object({
   Content: z.string().optional(),
 });
 const webSearch = z.object({ query: z.string() });
+const fileEdit = z.object({
+  Path: z.string().optional(),
+  Target: z.string().optional(),
+  Replacement: z.string().optional(),
+}).passthrough();
+
+function outputText(output: AcpToolCallSnapshot["output"]): string | undefined {
+  if (typeof output === "string") return output;
+  const parsed = z.object({ content: z.string().optional(), text: z.string().optional() })
+    .safeParse(output).data;
+  return parsed?.content ?? parsed?.text;
+}
 
 export const mapToolCall: NonNullable<AcpTransformer["toolCall"]> = (
   call,
@@ -27,6 +39,19 @@ export const mapToolCall: NonNullable<AcpTransformer["toolCall"]> = (
 ) => {
   if (call.name?.startsWith("mcp_")) {
     return mapMcpCall(call, call.name, context.mcpServerNames ?? []);
+  }
+  if (call.name === "edit_file") {
+    const input = fileEdit.safeParse(call.input).data;
+    if (input) {
+      // Normalize only the presentation snapshot. Let each SDK prefer native
+      // diff blocks; setting detail here would conceal them in 0.17.3.
+      return { ...call, input: {
+        ...(input.Path !== undefined ? { filePath: input.Path } : {}),
+        ...(input.Target !== undefined ? { oldString: input.Target } : {}),
+        ...(input.Replacement !== undefined ? { newString: input.Replacement } : {}),
+        ...input,
+      } };
+    }
   }
   const detail = mapNativeDetail(call);
   return detail ? { ...call, detail } : call;
@@ -56,7 +81,8 @@ function mapNativeDetail(
     case "search_web": {
       const input = webSearch.safeParse(call.input).data;
       if (input)
-        return { type: "search", toolName: "web_search", query: input.query };
+        return { type: "search", toolName: "web_search", query: input.query,
+          content: outputText(call.output) };
       break;
     }
   }
@@ -68,6 +94,7 @@ function mapNativeDetail(
   return {
     type: "read",
     filePath,
+    content: outputText(call.output),
     offset,
     limit:
       offset !== undefined && end !== undefined && end >= offset

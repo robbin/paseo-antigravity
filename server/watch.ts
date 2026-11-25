@@ -2,12 +2,10 @@ import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 
 export interface Limits {
   startup: number;
-  silent: number;
   cancel: number;
 }
 export const defaults: Limits = {
   startup: 90_000,
-  silent: 900_000,
   cancel: 5_000,
 };
 type Id = string | number;
@@ -43,9 +41,9 @@ interface Session {
   prompts: Set<Id>;
   tools: Map<string, Tool>;
   approvals: Set<Id>;
-  progress: number;
   cancelPrompts: Map<Id, number>;
   cancelTools: Map<string, number>;
+  cancelApprovals: Map<Id, number>;
   replay: boolean;
   retiredTools: Set<string>;
 }
@@ -66,16 +64,16 @@ export class Watch {
     this.turn = { turnId, startedAt: now, canceled: false, replaced: false,
       text: false, trailingText: false, results: 0, completed: 0, failed: 0 };
   }
-  private session(id: string, now: number): Session {
+  private session(id: string): Session {
     let s = this.sessions.get(id);
     if (!s) {
       s = {
         prompts: new Set(),
         tools: new Map(),
         approvals: new Set(),
-        progress: now,
         cancelPrompts: new Map(),
         cancelTools: new Map(),
+        cancelApprovals: new Map(),
         replay: false,
         retiredTools: new Set(),
       };
@@ -101,10 +99,11 @@ export class Watch {
       (now < lastTick && at > now) || now - at > 5000 ? now : at;
     for (const c of this.calls.values()) c.at = rebase(c.at);
     for (const s of this.sessions.values()) {
-      s.progress = rebase(s.progress);
       for (const [id, at] of s.cancelPrompts)
         s.cancelPrompts.set(id, rebase(at));
       for (const [id, at] of s.cancelTools) s.cancelTools.set(id, rebase(at));
+      for (const [id, at] of s.cancelApprovals)
+        s.cancelApprovals.set(id, rebase(at));
     }
   }
   observe(direction: "out" | "in", frame: AcpStreamMessage, now: number): void {
@@ -118,18 +117,17 @@ export class Watch {
         this.calls.set(id, { method: m.method, session: sid, at: now,
           turn: m.method === "session/prompt" ? this.turn : undefined });
         if (m.method === "session/load" && sid)
-          this.session(sid, now).replay = true;
+          this.session(sid).replay = true;
         if (m.method === "session/prompt" && sid) {
           if (this.turn) this.turn.nativeSessionId = sid;
-          const s = this.session(sid, now);
+          const s = this.session(sid);
           s.replay = false;
           s.prompts.add(id);
-          s.progress = now;
         }
       }
       if (m.method === "session/cancel" && sid) {
         if (this.turn?.nativeSessionId === sid) this.turn.canceled = true;
-        const s = this.session(sid, now);
+        const s = this.session(sid);
         // Snapshot only the targets that exist now. Repeated Stop keeps each old
         // target's first deadline; newly targeted work receives its own deadline.
         for (const id of s.prompts)
@@ -137,13 +135,16 @@ export class Watch {
         for (const [id, tool] of s.tools)
           if (!tool.detached && !s.cancelTools.has(id))
             s.cancelTools.set(id, now);
+        // Restored approvals may have no active prompt or live tool at all.
+        for (const id of s.approvals)
+          if (!s.cancelApprovals.has(id)) s.cancelApprovals.set(id, now);
       }
       if (!m.method && id !== undefined) {
         const session = this.permissions.get(id);
         if (session) {
-          const s = this.session(session, now);
+          const s = this.session(session);
           s.approvals.delete(id);
-          s.progress = now;
+          s.cancelApprovals.delete(id);
           this.permissions.delete(id);
         }
       }
@@ -153,11 +154,10 @@ export class Watch {
       const call = this.calls.get(id);
       this.calls.delete(id);
       if (call?.method === "session/load" && call.session)
-        this.session(call.session, now).replay = false;
+        this.session(call.session).replay = false;
       if (call?.method === "session/prompt" && call.session) {
-        const s = this.session(call.session, now);
+        const s = this.session(call.session);
         s.prompts.delete(id);
-        s.progress = now;
         s.cancelPrompts.delete(id);
         if (call.turn) {
           const t = call.turn, reason = record(m.result).stopReason;
@@ -174,14 +174,13 @@ export class Watch {
       }
     }
     if (m.method === "session/request_permission" && sid && id !== undefined) {
-      const s = this.session(sid, now);
+      const s = this.session(sid);
       s.approvals.add(id);
-      s.progress = now;
       this.permissions.set(id, sid);
     }
     if (m.method !== "session/update" || !sid) return;
     const u = record(p.update),
-      s = this.session(sid, now);
+      s = this.session(sid);
     if (s.replay) {
       if (typeof u.toolCallId === "string") this.retireTool(s, u.toolCallId);
       return;
@@ -192,18 +191,6 @@ export class Watch {
     if (turn && u.sessionUpdate === "agent_message_chunk" &&
         content.type === "text" && typeof content.text === "string" && content.text.trim())
       turn.text = turn.trailingText = true;
-    if (
-      [
-        "agent_message_chunk",
-        "agent_thought_chunk",
-        "tool_call",
-        "tool_call_update",
-        "plan",
-        "compaction_update",
-      ].includes(String(u.sessionUpdate))
-    ) {
-      s.progress = now;
-    }
     if (typeof u.toolCallId === "string") {
       const old = s.tools.get(u.toolCallId),
         input = record(u.rawInput);
@@ -244,7 +231,8 @@ export class Watch {
     }
     for (const s of this.sessions.values()) {
       if (
-        [...s.cancelPrompts.values(), ...s.cancelTools.values()].some(
+        [...s.cancelPrompts.values(), ...s.cancelTools.values(),
+          ...s.cancelApprovals.values()].some(
           (at) => now - at >= this.limits.cancel,
         )
       )
@@ -252,14 +240,9 @@ export class Watch {
           failure:
             "Antigravity 未及时结束取消请求，已关闭本会话进程；未重发消息。",
         };
-      const tools = [...s.tools.values()].some((t) => !t.detached);
-      if (s.approvals.size > 0) continue;
-      if (!s.prompts.size && !tools) continue;
-      if (s.prompts.size && !tools && now - s.progress >= this.limits.silent)
-        return {
-          failure:
-            "Antigravity 连续无进展且没有待审批或运行中的工具，已关闭旧进程。请刷新会话后继续；未重发消息。",
-        };
+      // agy can keep a prompt open after the spawning tool completes, including
+      // restored background work with no live tool event. Silence is not proof
+      // of a stalled process. Only explicit Stop arms a prompt/approval deadline.
     }
     return {};
   }

@@ -40,6 +40,20 @@ const response = z.object({
     .optional(),
 });
 
+// These ACP-only options have no verified equivalent for the top-level /usage
+// command. Never silently query the default account when they are present.
+function directoryArgs(args: readonly string[]): string[] {
+  return args.flatMap((arg, index) =>
+    /^(--app[-_]data[-_]dir|--gemini[-_]dir|--cli_dir_name)(=|$)/.test(arg)
+      ? [arg, ...(arg.includes("=") ? [] : [args[index + 1] ?? ""])]
+      : []);
+}
+
+function resetTime(value: string | null | undefined): string | null {
+  const timestamp = value == null ? NaN : Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp > 0 ? value! : null;
+}
+
 function accountKey(env: ProviderLaunch["env"]): string {
   return hashAccountKey(
     path.resolve(
@@ -99,8 +113,13 @@ export class Usage {
         if (scope.kind === "session" && scope.provider !== "better-paseo-antigravity")
           return [];
         if (!scope.launch) return [];
-        const launch = scope.launch;
-        const key = accountKey(launch.env);
+        const launch = { ...scope.launch, env: {
+          ...scope.launch.env, ...(scope.kind === "session" ? scope.env : {}),
+        } };
+        const directories = directoryArgs(launch.args);
+        const key = directories.length
+          ? hashAccountKey(JSON.stringify([accountKey(launch.env), directories]))
+          : accountKey(launch.env);
         const locator = hashAccountKey(JSON.stringify(launch));
         this.launches.set(locator, launch);
         return [{ key, input: { launch: locator } }];
@@ -114,6 +133,8 @@ export class Usage {
           throw new Error(
             "Antigravity launch does not contain the acp subcommand",
           );
+        if (directoryArgs(launch.args).length)
+          throw new Error("Usage queries with custom ACP data directories are not supported; no default account was queried.");
         let result;
         try {
           result = await execCommand(
@@ -136,12 +157,14 @@ export class Usage {
             "Antigravity usage command failed or timed out. Check that agy is signed in.",
           );
         }
-        const data = response.parse(JSON.parse(result.stdout));
-        if (data.status !== "SUCCESS") {
-          throw new Error(
-            data.error || data.response || `agy usage returned ${data.status}`,
-          );
+        let data: z.infer<typeof response>;
+        try {
+          data = response.parse(JSON.parse(result.stdout));
+        } catch {
+          throw new Error("Antigravity usage returned invalid data.");
         }
+        if (data.status !== "SUCCESS")
+          throw new Error("Antigravity usage query was not successful.");
         if (!data.command) throw new Error("agy did not return usage data");
         const groups = data.command.data.groups;
         const includeGroup = groups.length > 1;
@@ -170,7 +193,7 @@ export class Usage {
                 summary: !bucket.disabled && bucket.window === "weekly",
                 utilizationPct: used,
                 durationSeconds: windowDurationSeconds(bucket.window),
-                resetsAt: bucket.disabled ? null : bucket.reset_time,
+                resetsAt: bucket.disabled ? null : resetTime(bucket.reset_time),
                 tone: used === null ? "default" : toneFromUsedPct(used),
               }),
             ];

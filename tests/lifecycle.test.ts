@@ -21,7 +21,7 @@ const config: ProviderSessionConfig = {
 async function setup(scenario = "", extra: Record<string, string> = {}) {
   const c = await provider({
     checkVersion: async () => "1.5.15",
-    limits: { startup: 2000, silent: 200, cancel: 80 },
+    limits: { startup: 2000, cancel: 80 },
     closeTimeoutMs: 150,
   }).connect({
     versions: [1],
@@ -150,9 +150,88 @@ for (const action of ["replace", "interrupt", "deferred-replace"]) {
     } finally { await h.c.close(); await rm(dir, {recursive:true,force:true}); }
   });
 }
+test("rejected replacement cannot hide the original turn notice", {timeout:5000}, async t => {
+  const defer = options.deferTurnOnRunningTools!, quiet = defer.quietLimitMs;
+  defer.quietLimitMs = 100;
+  t.after(() => { defer.quietLimitMs = quiet; });
+  const h = await setup();
+  try {
+    await h.open();
+    const from = await h.prompt("turn-deferred");
+    await h.wait(e => e.type === "timeline.item" && e.item.type === "tool_call" && e.item.status === "completed", from);
+    await assert.rejects(h.c.send({type:"session.prompt",sessionId:"s",prompt:{
+      clientMessageId:"invalid",delivery:"auto",input:{type:"not-a-prompt"} as never,
+    }}));
+    await h.wait(e => e.type === "session.turn" && e.state === "completed", from);
+    assert.equal(h.rows.slice(from).filter(e => e.type === "session.notice" && e.notice.id === "antigravity-tool-only").length,1);
+  } finally { await h.c.close(); }
+});
+
+test("rapid replacements preserve final empty notice and suppress earlier notices", {timeout:6000}, async () => {
+  const h = await setup();
+  try {
+    await h.open();
+    const from = await h.prompt("turn-deferred-hold");
+    await h.wait(e => e.type === "timeline.item" && e.item.type === "tool_call" && e.item.status === "completed", from);
+    await Promise.all([h.prompt("turn-deferred-hold"), h.prompt("empty")]);
+    await h.wait(e => e.type === "session.notice" && e.notice.id === "antigravity-empty", from);
+    const notices = h.rows.slice(from).filter(e => e.type === "session.notice");
+    assert.equal(notices.length,1);
+  } finally { await h.c.close(); }
+});
+
+test("accepted queued prompts fail asynchronously on close without poisoning reopen", {timeout:6000}, async () => {
+  const h = await setup("ignore-cancel");
+  try {
+    await h.open();
+    const from = await h.prompt("silent");
+    await h.wait(e => e.type === "session.turn" && e.state === "started", from);
+    for (const id of ["queued-2", "queued-3"]) {
+      // These are valid, admitted prompts, not schema/admission rejections.
+      await h.c.send({type:"session.prompt",sessionId:"s",prompt:{
+        clientMessageId:id,delivery:"auto",input:{type:"message",content:[{type:"text",text:"empty"}]},
+      }});
+    }
+    await h.c.send({type:"session.close",sessionId:"s",requestId:"close-queued"});
+    await h.wait(e => e.type === "session.closed", from);
+    for (const id of ["queued-2", "queued-3"]) {
+      const result = await h.wait(e => e.type === "session.prompt_result" && e.clientMessageId === id, from);
+      assert.ok(result.type === "session.prompt_result");
+      assert.equal(result.result.type,"failed");
+      assert.equal(h.rows.slice(from).filter(e => e.type === "session.prompt_result" && e.clientMessageId === id).length,1);
+    }
+    const reopened = h.rows.length;
+    await h.c.send({type:"session.open",sessionId:"s",requestId:"reopen",config,history:"skip"});
+    await h.wait(e => e.type === "session.ready", reopened);
+    const empty = await h.prompt("empty");
+    await h.wait(e => e.type === "session.turn" && e.state === "completed", empty);
+    assert.equal(h.rows.slice(empty).filter(e => e.type === "session.notice" && e.notice.id === "antigravity-empty").length,1);
+  } finally { await h.c.close(); }
+});
+
+for (const scenario of ["", "ignore-cancel"]) {
+  test(`quiet prompt remains open until explicit Stop (${scenario || "responsive"})`, {timeout:5000}, async () => {
+    const h = await setup(scenario);
+    try {
+      await h.open();
+      const from = await h.prompt("silent");
+      await h.wait(e => e.type === "session.turn" && e.state === "started", from);
+      // Beyond the former scaled 200ms silent deadline; no heartbeat is sent.
+      await sleep(350);
+      assert.ok(!h.rows.slice(from).some(e => e.type === "session.runtime_failed" ||
+        (e.type === "session.turn" && e.state !== "started")));
+      await h.c.send({type:"session.interrupt",sessionId:"s",requestId:"stop"});
+      if (scenario) {
+        const e = await h.wait(e => e.type === "session.runtime_failed", from);
+        assert.ok(e.type === "session.runtime_failed");
+        assert.match(e.error.message, /取消/);
+      } else await h.wait(e => e.type === "session.turn" && e.state === "canceled", from);
+    } finally { await h.c.close(); }
+  });
+}
+
 for (const [text, reason] of [
   ["bad", "非 ACP"],
-  ["silent", "连续无进展"],
   ["deferred-bad", "非 ACP"],
   ["exit-17", "退出码 17"],
   ["signal-term", "SIGTERM"],
@@ -190,7 +269,7 @@ for (const [text, reason] of [
     },
   );
 }
-for (const kind of ["shell", "mcp", "diff", "native", "cleared"]) {
+for (const kind of ["shell", "mcp", "diff", "native", "cleared", "read", "search", "edit"]) {
   test(`SDK preserves content-only ${kind} results without empty-result warnings`, { timeout: 5000 }, async () => {
     const h = await setup();
     try {
@@ -212,10 +291,15 @@ for (const kind of ["shell", "mcp", "diff", "native", "cleared"]) {
       } else if (kind === "mcp") {
         assert.ok(detail.type === "unknown");
         assert.equal(detail.output, "完整结果\n");
+      } else if (kind === "read" || kind === "search") {
+        assert.equal(detail.type, kind);
+        assert.ok(detail.type === "read" || detail.type === "search");
+        assert.equal(detail.content, "完整结果\n");
       } else {
         assert.ok(detail.type === "edit");
-        assert.equal(detail.oldString, "before");
-        assert.equal(detail.newString, "after");
+        assert.equal(detail.oldString, kind === "diff" ? "before" : "input-before");
+        assert.equal(detail.newString, kind === "diff" ? "after" : "");
+        assert.equal(detail.filePath, kind === "diff" ? "/tmp/fixture" : "/tmp/edit");
       }
       assert.ok(!h.rows.slice(from).some(
         (e) => e.type === "session.notice" && e.notice.id === "antigravity-empty",
@@ -296,12 +380,9 @@ test(
         (e) => e.type === "session.turn" && e.state === "canceled",
         from,
       );
-      from = await h.prompt("silent");
-      const e = await h.wait((e) => e.type === "session.runtime_failed", from);
-      assert.ok(
-        e.type === "session.runtime_failed" &&
-          e.error.message.includes("连续无进展"),
-      );
+      from = await h.prompt("hello");
+      await h.wait(e => e.type === "session.turn" && e.state === "completed", from);
+      assert.ok(!h.rows.slice(from).some(e => e.type === "session.runtime_failed"));
     } finally {
       await h.c.close();
     }
@@ -329,12 +410,9 @@ test(
               e.item.status === "failed",
           ),
       );
-      from = await h.prompt("silent");
-      const e = await h.wait((e) => e.type === "session.runtime_failed", from);
-      assert.ok(
-        e.type === "session.runtime_failed" &&
-          e.error.message.includes("连续无进展"),
-      );
+      from = await h.prompt("hello");
+      await h.wait(e => e.type === "session.turn" && e.state === "completed", from);
+      assert.ok(!h.rows.slice(from).some(e => e.type === "session.runtime_failed"));
     } finally {
       await h.c.close();
     }
@@ -443,17 +521,39 @@ test(
               e.item.text === "REPLAY_" + "中".repeat(100000),
           ),
       );
-      const p = await h.prompt("silent");
-      const error = await h.wait((e) => e.type === "session.runtime_failed", p);
-      assert.ok(
-        error.type === "session.runtime_failed" &&
-          error.error.message.includes("连续无进展"),
-      );
+      const p = await h.prompt("hello");
+      await h.wait(e => e.type === "session.turn" && e.state === "completed", p);
+      assert.ok(!h.rows.slice(p).some(e => e.type === "session.runtime_failed"));
     } finally {
       await h.c.close();
     }
   },
 );
+for (const history of ["skip", "replay"] as const)
+  test(`Stop closes restored approvals without an active turn (${history})`, {timeout:6000}, async () => {
+    const h = await setup("restore-permissions");
+    try {
+      await h.open();
+      const opened = h.rows.find(e => e.type === "session.opened");
+      assert.ok(opened?.type === "session.opened");
+      await h.c.send({type:"session.close",sessionId:"s",requestId:"close"});
+      await h.wait(e => e.type === "session.closed");
+      const from = h.rows.length;
+      await h.c.send({type:"session.open",sessionId:"s",requestId:"restore",config,history,persistence:opened.persistence});
+      await h.wait(e => e.type === "session.ready",from);
+      await h.wait(e => e.type === "session.permission" && e.request.title === "worker-b",from);
+      await h.c.send({type:"session.interrupt",sessionId:"s",requestId:"stop"});
+      const failure = await h.wait(e => e.type === "session.runtime_failed",from);
+      assert.ok(failure.type === "session.runtime_failed");
+      assert.match(failure.error.message, /取消/);
+      // SDK settlePendingWork resolves permission promises on transport failure,
+      // but 0.17.3 emits no permission_resolved events here. runtime_failed is
+      // the host cleanup boundary; UI dismissal needs separate host validation.
+      assert.equal(h.rows.slice(from).filter(e => e.type === "session.turn").length,0);
+      assert.equal(h.rows.slice(from).filter(e => e.type === "session.permission").length,2);
+    } finally { await h.c.close(); }
+  });
+
 for (const history of ["skip", "replay"] as const)
   test(`restored concurrent subagent approvals route independently (${history})`, {timeout:6000}, async () => {
     const h = await setup("restore-permissions");

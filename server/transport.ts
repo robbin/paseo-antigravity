@@ -45,7 +45,7 @@ function parse(line: string): AcpStreamMessage {
   ) {
     const params = v.params as { toolCall?: Record<string, unknown> };
     if (params?.toolCall && params.toolCall.rawInput === undefined)
-      params.toolCall.rawInput = {};
+      params.toolCall.rawInput = null;
   }
   return v as AcpStreamMessage;
 }
@@ -216,7 +216,7 @@ export function createTransport(
   };
   const interval = Math.max(
     10,
-    Math.min(500, limits.startup, limits.silent, limits.cancel),
+    Math.min(500, limits.startup, limits.cancel),
   );
   let lastTick = Date.now();
   const timer = setInterval(() => {

@@ -21,7 +21,7 @@ test("load response is not held behind continuous live updates", { timeout: 5000
     setInterval(()=>send({method:'session/update',params:{sessionId:'s',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'live'}}}}),30);
   });`;
   const t = createTransport({command:process.execPath,args:["-e",code],env:{}},
-    {cwd:process.cwd(),env:{}},()=>{}, {startup:1000,silent:5000,cancel:500});
+    {cwd:process.cwd(),env:{}},()=>{}, {startup:1000,cancel:500});
   try {
     await t.stream.writable.getWriter().write({jsonrpc:"2.0",id:1,method:"session/load",params:{sessionId:"s"}});
     const first = (await t.stream.readable.getReader().read()).value;
@@ -30,7 +30,7 @@ test("load response is not held behind continuous live updates", { timeout: 5000
 });
 
 test("watch ends replay at load response and tracks autonomous live tools", () => {
-  const w = new Watch({startup:100,silent:100,cancel:20});
+  const w = new Watch({startup:100,cancel:20});
   const update = (id:string) => ({jsonrpc:"2.0" as const,method:"session/update",params:{sessionId:"s",update:{sessionUpdate:"tool_call",toolCallId:id,status:"in_progress"}}});
   w.observe("out",{jsonrpc:"2.0",id:1,method:"session/load",params:{sessionId:"s"}},0);
   w.observe("in",update("historical"),1);

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Watch } from "../server/watch.ts";
-const limits = { startup: 90000, silent: 900000, cancel: 5000 };
+const limits = { startup: 90000, cancel: 5000 };
 function prompt(w: Watch, id: number, at: number) {
   w.observe(
     "out",

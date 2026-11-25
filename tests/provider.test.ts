@@ -12,7 +12,15 @@ if(m.method==='session/new')r({sessionId:'native',configOptions:[]});
 if(m.method==='session/load'||m.method==='session/close')r({});
 if(m.method==='session/prompt'){
 const text=m.params.prompt[0].text;
-if(text==='permission'){permission=m.id;send({id:'allow',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'t',title:'fixture tool',status:'pending'},options:[{optionId:'deny',name:'Deny',kind:'reject_once'},{optionId:'yes',name:'Allow',kind:'allow_once'}]}});return;}
+if(text.startsWith('permission')){
+permission=m.id;
+const edit=text!=='permission', diff=text==='permission-edit-diff';
+send({id:'allow',method:'session/request_permission',params:{sessionId:'native',toolCall:{
+  toolCallId:text,title:'fixture tool',status:'pending',
+  ...(edit?{name:'edit_file',kind:'edit',rawInput:{Path:'/tmp/input',Target:'input-before',Replacement:''}}:{}),
+  content:diff?[{type:'diff',path:'/tmp/native',oldText:'native-before',newText:'native-after'}]:
+    [{type:'content',content:{type:'text',text:'approval explanation'}}]
+},options:[{optionId:'deny',name:'Deny',kind:'reject_once'},{optionId:'yes',name:'Allow',kind:'allow_once'}]}});return;}
 if(text==='empty'){r({stopReason:'end_turn'});return;}
 send({method:'session/update',params:{sessionId:'native',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:process.env.FIXTURE_SESSION_VALUE??'none'}}}});r({stopReason:'end_turn'});}
 if(m.id==='allow'&&!m.method)send({id:permission,result:{stopReason:'cancelled'}});
@@ -107,6 +115,11 @@ test(
         from,
       );
       assert.equal(permission.type, "session.permission");
+      if (permission.type === "session.permission" && process.env.SDK_PERMISSION_DETAILS === "1") {
+        const detail = (permission.request as {detail?: {type:string; text?:string}}).detail;
+        assert.equal(detail?.type, "plain_text");
+        assert.equal(detail?.text, "approval explanation");
+      }
       if (permission.type === "session.permission")
         await c.send({
           type: "session.permission",
@@ -118,6 +131,22 @@ test(
         (e) => e.type === "session.turn" && e.state === "canceled",
         from,
       );
+      for (const name of ["permission-edit", "permission-edit-diff"]) {
+        from = await prompt(name);
+        const approval = await wait(e => e.type === "session.permission", from);
+        assert.ok(approval.type === "session.permission");
+        if (process.env.SDK_PERMISSION_DETAILS === "1") {
+          const detail = (approval.request as {detail?: {type:string; filePath?:string; oldString?:string; newString?:string}}).detail;
+          assert.equal(detail?.type,"edit");
+          const native = name.endsWith("-diff");
+          assert.equal(detail?.filePath,native ? "/tmp/native" : "/tmp/input");
+          assert.equal(detail?.oldString,native ? "native-before" : "input-before");
+          assert.equal(detail?.newString,native ? "native-after" : "");
+        }
+        await c.send({type:"session.permission",sessionId:"s",permissionId:approval.request.id,
+          response:{behavior:"deny",selectedActionId:"deny"}});
+        await wait(e => e.type === "session.turn" && e.state === "canceled", from);
+      }
       from = await prompt("empty");
       await wait(
         (e) => e.type === "session.turn" && e.state === "completed",
