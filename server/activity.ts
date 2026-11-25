@@ -6,7 +6,7 @@ export interface ActivityCounts { openPrompts: number; openTools: number; approv
 export class Activity {
   private readonly transportId = ++nextTransportId;
   private sequence = 0;
-  private stops = new Map<number, number>();
+  private stops = new Map<number, {at: number; turnId?: string}>();
   private pending?: { seq: number; method: string; at: number };
   private live?: { turnId: string; at: number; last: number; first?: number; lastInbound?: number;
     lastWrite?: number; reported: boolean; responses: number;
@@ -19,15 +19,17 @@ export class Activity {
   end() { this.live = undefined; }
   requestStop(now: number): number {
     const token = ++this.sequence;
-    this.stops.set(token, now);
+    this.stops.set(token, {at: now, turnId: this.live?.turnId});
     this.stopLog("requested", token);
     return token;
   }
-  settleStop(token: number) {
-    if (this.stops.delete(token)) this.stopLog("settled", token);
+  settleStop(token: number, phase: "settled" | "rejected" = "settled") {
+    if (!this.stops.has(token)) return;
+    this.stopLog(phase, token);
+    this.stops.delete(token);
   }
-  private stopLog(phase: "requested" | "settled" | "timeout", token: number) {
-    console.log("[antigravity:stop]", JSON.stringify({ transportId: this.transportId, turnId: this.live?.turnId, phase, token,
+  private stopLog(phase: "requested" | "settled" | "rejected" | "timeout", token: number) {
+    console.log("[antigravity:stop]", JSON.stringify({ transportId: this.transportId, turnId: this.stops.get(token)?.turnId, phase, token,
       pendingWrite: this.pending?.method ?? null }));
   }
   writeStart(method: unknown, now: number): number {
@@ -55,7 +57,7 @@ export class Activity {
     }
   }
   resume(rebase: (at: number) => number) {
-    for (const [token, at] of this.stops) this.stops.set(token, rebase(at));
+    for (const stop of this.stops.values()) stop.at = rebase(stop.at);
     if (this.pending) this.pending.at = rebase(this.pending.at);
     const l = this.live;
     if (l) {
@@ -66,7 +68,7 @@ export class Activity {
     }
   }
   check(now: number, cancelMs: number, counts: ActivityCounts): string | undefined {
-    for (const [token, at] of this.stops) if (now - at >= cancelMs) {
+    for (const [token, stop] of this.stops) if (now - stop.at >= cancelMs) {
       this.stopLog("timeout", token);
       return "Antigravity 停止请求未能及时完成传输，已关闭本会话进程；未重发消息。";
     }

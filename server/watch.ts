@@ -20,6 +20,7 @@ interface Turn {
   stopReason?: string;
   errorCode?: number;
   canceled: boolean;
+  stopTokens: Set<number>;
   replaced: boolean;
   text: boolean;
   trailingText: boolean;
@@ -60,6 +61,7 @@ export class Watch {
   private calls = new Map<Id, Call>();
   private sessions = new Map<string, Session>();
   private permissions = new Map<Id, string>();
+  private stopOwners = new Map<number, Turn>();
   turn?: Turn;
   readonly activity: Activity;
   constructor(readonly limits: Limits = defaults) {
@@ -80,7 +82,23 @@ export class Watch {
     const c = this.counts();
     const approvals = [...this.sessions.values()].some(s => s.approvals.size);
     if (!this.turn && !c.openPrompts && !c.openTools && !approvals) return;
-    return this.activity.requestStop(now);
+    const token = this.activity.requestStop(now);
+    if (this.turn) {
+      this.turn.stopTokens.add(token);
+      this.stopOwners.set(token, this.turn);
+    }
+    return token;
+  }
+  settleStop(token: number, rejected = false) {
+    const owner = this.stopOwners.get(token);
+    if (owner) {
+      owner.stopTokens.delete(token);
+      // Acceptance remains an intent to stop even after its delivery settles.
+      // Rejection rolls back only this token, on the captured original turn.
+      if (!rejected) owner.canceled = true;
+      this.stopOwners.delete(token);
+    }
+    this.activity.settleStop(token, rejected ? "rejected" : "settled");
   }
   endTurn(turnId: string) {
     if (this.turn?.turnId !== turnId) return;
@@ -89,7 +107,7 @@ export class Watch {
   }
   startTurn(turnId: string, now = Date.now()) {
     this.activity.start(turnId, now);
-    this.turn = { turnId, startedAt: now, canceled: false, replaced: false,
+    this.turn = { turnId, startedAt: now, canceled: false, stopTokens: new Set(), replaced: false,
       text: false, trailingText: false, results: 0, completed: 0, failed: 0 };
   }
   private session(id: string): Session {
@@ -290,6 +308,6 @@ export class Watch {
 export function turnMetadata(t: Turn) {
   return {turnId:t.turnId, nativeSessionId:t.nativeSessionId, startedAt:t.startedAt,
     responseAt:t.responseAt, stopReason:t.stopReason, errorCode:t.errorCode,
-    canceled:t.canceled, replaced:t.replaced, text:t.text, trailingText:t.trailingText,
+    canceled:t.canceled || t.stopTokens.size > 0, replaced:t.replaced, text:t.text, trailingText:t.trailingText,
     results:t.results, completed:t.completed, failed:t.failed};
 }

@@ -1,5 +1,13 @@
 # Better Paseo Antigravity validation
 
+## Unreleased follow-up: accepted Stop intent and diagnostic correlation
+
+- 氖元素's high-thinking review of 07cf333 reproduced an empty/tool-only notice after an admitted Stop whose cancel frame was still queued. Friday added an assertion to the real-SDK blocked-approval test and observed it fail before fixing the behavior.
+- Provisional Stop tokens now retain their original Turn owner. Notice suppression and legacy metadata use the same effective cancellation intent. Admission rejection removes only that token from its captured owner; delivery settlement preserves the admitted intent without changing either cancellation deadline. The token set is excluded from legacy log metadata.
+- Stop diagnostics distinguish `rejected` admission from `settled` delivery, and retain the original turn ID after turn completion/replacement. Logs remain explicit allowlists.
+- Real-SDK regression cases cover empty and tool-only endings with accepted/rejected Stop, including SDK-visible completed tool events, notice presence/absence, cancellation metadata and timeout correlation. Unit tests cover multiple intents, precise rollback across turn changes, wire cancellation preservation, settlement/idempotence and log schema/privacy. No auto-retry, runtime deployment, dependency change or model-setting change is included.
+- Verification: typecheck and all 246 tests pass. 氖元素's high-thinking read-only re-review confirmed the P2 fix and rejected-Stop log distinction, with no blockers or new regressions. He independently reran typecheck, all 246 tests, diff check, the three Stop-intent tests, and three repetitions of the four accepted/rejected ending cases. This validates source and local simulations, not a real model-incident root cause or deployment of the running plugin.
+
 ## Unreleased: Stop delivery fallback and quiet diagnostics
 
 - Design reviewed independently by 氖元素 and 搬砖工, then finalized by Friday in `docs/acp-stall-recovery.md`. All implementation and tests authored by Friday; no coding delegated.

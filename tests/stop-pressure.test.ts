@@ -26,7 +26,10 @@ lines.on('line', line => {
   if(process.env.APPROVAL_BLOCK) {
    send({id:'approve',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'approval',title:'approval',status:'pending'},options:[{optionId:'x'.repeat(4*1024*1024),name:'Allow',kind:'allow_once'}]}});
    process.stdin.pause();
-   setTimeout(()=>reply({stopReason:'end_turn'}),300);
+   setTimeout(()=>{
+    if(process.env.TOOL_ONLY) send({method:'session/update',params:{sessionId:'native',update:{sessionUpdate:'tool_call',toolCallId:'done',title:'done',kind:'execute',name:'run_command',status:'completed',rawInput:{},rawOutput:'ok'}}});
+    reply({stopReason:'end_turn'});
+   },300);
   }
   if(process.env.DEFER && m.params.prompt[0].text==='defer') {
    send({method:'session/update',params:{sessionId:'native',update:{sessionUpdate:'tool_call',toolCallId:'worker',title:'worker',kind:'execute',status:'in_progress',rawInput:{}}}});
@@ -107,9 +110,10 @@ for (const mode of ["blocked", "resume", "deferred"]) {
   });
 }
 
-test("turn ending cannot release Stop queued behind an approval write", {timeout:10000}, async t=>{
+for(const toolOnly of [false,true]) for(const rejected of [false,true])
+test(`turn ending behind approval write (toolOnly=${toolOnly}, rejected=${rejected})`, {timeout:10000}, async t=>{
  const log=t.mock.method(console,"log",()=>{});
- const c=await provider({checkVersion:async()=>"1.5.17",limits:{startup:2000,cancel:800},closeTimeoutMs:100}).connect({versions:[1],capabilities:["prompt.message","permission"],launch:{command:process.execPath,args:["-e",fixture],env:{APPROVAL_BLOCK:"1"}}});
+ const c=await provider({checkVersion:async()=>"1.5.17",limits:{startup:2000,cancel:800},closeTimeoutMs:100}).connect({versions:[1],capabilities:["prompt.message","permission"],launch:{command:process.execPath,args:["-e",fixture],env:{APPROVAL_BLOCK:"1",...(toolOnly?{TOOL_ONLY:"1"}:{})}}});
  const events:ProviderEvent[]=[];c.onEvent(e=>events.push(e));
  const wait=async(p:(e:ProviderEvent)=>boolean)=>{
   for(let i=0;i<400;i++){const e=events.find(p);if(e)return e;await sleep(10);}throw Error("missing event");
@@ -121,11 +125,30 @@ test("turn ending cannot release Stop queued behind an approval write", {timeout
   const approval=await wait(e=>e.type==="session.permission");assert.ok(approval.type==="session.permission");
   await c.send({type:"session.permission",sessionId:"s",permissionId:approval.request.id,response:{behavior:"allow",selectedActionId:"x".repeat(4*1024*1024)}});
   await sleep(30);
-  await c.send({type:"session.interrupt",sessionId:"s",requestId:"stop"});
+  if(rejected) await assert.rejects(c.send({type:"session.interrupt",sessionId:"s",requestId:"stop",unexpected:true} as never));
+  else await c.send({type:"session.interrupt",sessionId:"s",requestId:"stop"});
   const end=await wait(e=>e.type==="session.turn"&&e.state!=="started");
+  if(toolOnly) assert.ok(events.some(e=>e.type==="timeline.item"&&e.item.type==="tool_call"&&e.item.status==="completed"));
+  if(rejected) {
+    await sleep(1100);
+    assert.ok(!events.some(e=>e.type==="session.runtime_failed"));
+    const notices=events.filter(e=>e.type==="session.notice");
+    assert.equal(notices.length,1);
+    assert.equal(notices[0].notice.id,toolOnly?"antigravity-tool-only":"antigravity-empty");
+    const terminal=JSON.parse(log.mock.calls.find(c=>c.arguments[0]==="[antigravity:turn-end]")!.arguments[1] as string);
+    assert.equal(terminal.canceled,false);
+    const phases=log.mock.calls.filter(c=>c.arguments[0]==="[antigravity:stop]").map(c=>JSON.parse(c.arguments[1] as string).phase);
+    assert.deepEqual(phases,["requested","rejected"]);
+    return;
+  }
   const failure=await wait(e=>e.type==="session.runtime_failed");
   assert.ok(failure.type==="session.runtime_failed");assert.match(failure.error.message,/停止请求.*传输/);
   assert.ok(events.indexOf(end)<events.indexOf(failure),"normal turn settlement must precede delivery timeout");
+  assert.ok(!events.some(e=>e.type==="session.notice"),"accepted Stop must suppress empty/tool-only notices even before its frame is written");
+  const terminal=JSON.parse(log.mock.calls.find(c=>c.arguments[0]==="[antigravity:turn-end]")!.arguments[1] as string);
+  assert.equal(terminal.canceled,true);
+  const stopLogs=log.mock.calls.filter(c=>c.arguments[0]==="[antigravity:stop]").map(c=>JSON.parse(c.arguments[1] as string));
+  assert.equal(stopLogs.find(r=>r.phase==="timeout").turnId,"acp:first");
   assert.ok(log.mock.calls.some(c=>c.arguments[0]==="[antigravity:stop]"&&String(c.arguments[1]).includes('"phase":"timeout"')));
  } finally {await c.close();}
 });

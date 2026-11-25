@@ -135,11 +135,11 @@ export function provider(
       // Stop IDs. Reserve before dispatch to reject collisions in either order.
       const requests = new Map<string, symbol>();
       const stops = new Map<string, { transport: OwnedTransport; token: number }>();
-      const settleStop = (id: string) => {
+      const settleStop = (id: string, rejected = false) => {
         const stop = stops.get(id);
         if (!stop) return;
         stops.delete(id);
-        stop.transport.watch.activity.settleStop(stop.token);
+        stop.transport.watch.settleStop(stop.token, rejected);
       };
       // send() acknowledges admission, not execution. prompt_result settles
       // each queued request, including failures reported asynchronously.
@@ -249,10 +249,11 @@ export function provider(
             // A successor can retire a deferred turn without wire cancel. Read
             // the queue at settlement, not when callers enqueue against an old turn.
             t.replaced ||= (replacements.get(e.sessionId)?.size ?? 0) > 0;
+            const metadata = turnMetadata(t);
             console.log("[antigravity:turn-end]", JSON.stringify({ sessionId: e.sessionId,
-              state: e.state, ...turnMetadata(t), endedAt: Date.now() }));
+              state: e.state, ...metadata, endedAt: Date.now() }));
             const empty = !t.text && !t.results;
-            if (e.state === "completed" && !t.canceled && !t.replaced &&
+            if (e.state === "completed" && !metadata.canceled && !t.replaced &&
                 (empty || ((t.completed + t.failed) > 0 && !t.trailingText)))
               emit({
                 type: "session.notice",
@@ -311,7 +312,7 @@ export function provider(
           const rollbackStop = () => {
             if (requestId !== undefined && requests.get(requestId) === reservation)
               requests.delete(requestId);
-            if (stopId !== undefined && stops.get(stopId) === stopEntry) settleStop(stopId);
+            if (stopId !== undefined && stops.get(stopId) === stopEntry) settleStop(stopId, true);
           };
           const replacement = input.type === "session.prompt" && input.prompt.delivery !== "steer"
             ? { sessionId: input.sessionId, id: input.prompt.clientMessageId } : undefined;

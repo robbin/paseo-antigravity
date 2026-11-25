@@ -14,14 +14,14 @@ test("Stop token survives turn changes, repeats do not extend first deadline",t=
  const first=w.requestStop(1)!;w.requestStop(20);
  w.endTurn("one");w.startTurn("two",30);
  assert.deepEqual(w.check(50),{});assert.match(w.check(51).failure!,/停止请求/);
- w.activity.settleStop(first);assert.deepEqual(w.check(69),{});
+ w.settleStop(first);assert.deepEqual(w.check(69),{});
  assert.match(w.check(70).failure!,/停止请求/);
 });
 test("idle Stop and settled/rejected tokens cannot poison future work",t=>{
  t.mock.method(console,"log",()=>{});
  const w=make();assert.equal(w.requestStop(0),undefined);
  w.startTurn("one",0);const token=w.requestStop(1)!;
- w.activity.settleStop(token);w.activity.settleStop(token);
+ w.settleStop(token);w.settleStop(token);
  w.endTurn("one");w.startTurn("two",200);
  assert.deepEqual(w.check(1000),{});
 });
@@ -30,7 +30,7 @@ test("two-phase Stop leaves wire cancellation its original deadline",t=>{
  const w=make();w.startTurn("one",0);prompt(w);
  const token=w.requestStop(1)!;
  frame(w,"out",{method:"session/cancel",params:{sessionId:"s"}},45);
- w.activity.settleStop(token);
+ w.settleStop(token);
  assert.deepEqual(w.check(94),{});assert.match(w.check(95).failure!,/取消请求/);
 });
 test("restored approval without turn admits a Stop",t=>{
