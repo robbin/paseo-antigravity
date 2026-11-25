@@ -117,6 +117,11 @@ paseo plugin update better-paseo-antigravity
 - Existing progress notices from older versions remain in timeline history; this version does not insert new no-progress notices.
 - See [VALIDATION.md](./VALIDATION.md) for the test matrix and verification notes.
 
+If headless `/usage` fails its eligibility check while the interactive command
+works, see [usage eligibility diagnostics and the opt-in adapter](./docs/usage-eligibility.md).
+The adapter uses a background terminal, not the Antigravity IDE, and leaves the
+default provider unchanged unless explicitly configured.
+
 ## Development
 
 ```bash
