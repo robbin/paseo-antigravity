@@ -1,8 +1,10 @@
 import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
+import { Activity } from "./activity";
 
 export interface Limits {
   startup: number;
   cancel: number;
+  quietDiag?: number;
 }
 export const defaults: Limits = {
   startup: 90_000,
@@ -59,8 +61,34 @@ export class Watch {
   private sessions = new Map<string, Session>();
   private permissions = new Map<Id, string>();
   turn?: Turn;
-  constructor(readonly limits: Limits = defaults) {}
+  readonly activity: Activity;
+  constructor(readonly limits: Limits = defaults) {
+    this.activity = new Activity(limits.quietDiag);
+  }
+  private counts() {
+    let openPrompts = 0, openTools = 0, approvals = 0;
+    for (const s of this.sessions.values()) {
+      if (s.replay) continue;
+      openPrompts += s.prompts.size;
+      openTools += [...s.tools.values()].filter(t => !t.detached).length;
+      approvals += s.approvals.size;
+    }
+    // Restored permissions count even during replay for Stop admission.
+    return {openPrompts, openTools, approvals};
+  }
+  requestStop(now = Date.now()): number | undefined {
+    const c = this.counts();
+    const approvals = [...this.sessions.values()].some(s => s.approvals.size);
+    if (!this.turn && !c.openPrompts && !c.openTools && !approvals) return;
+    return this.activity.requestStop(now);
+  }
+  endTurn(turnId: string) {
+    if (this.turn?.turnId !== turnId) return;
+    this.turn = undefined;
+    this.activity.end();
+  }
   startTurn(turnId: string, now = Date.now()) {
+    this.activity.start(turnId, now);
     this.turn = { turnId, startedAt: now, canceled: false, replaced: false,
       text: false, trailingText: false, results: 0, completed: 0, failed: 0 };
   }
@@ -97,6 +125,7 @@ export class Watch {
   resume(now: number, lastTick: number) {
     const rebase = (at: number) =>
       (now < lastTick && at > now) || now - at > 5000 ? now : at;
+    this.activity.resume(rebase);
     for (const c of this.calls.values()) c.at = rebase(c.at);
     for (const s of this.sessions.values()) {
       for (const [id, at] of s.cancelPrompts)
@@ -159,6 +188,7 @@ export class Watch {
         const s = this.session(call.session);
         s.prompts.delete(id);
         s.cancelPrompts.delete(id);
+        if (call.turn === this.turn) this.activity.incoming("response", now);
         if (call.turn) {
           const t = call.turn, reason = record(m.result).stopReason;
           t.responseAt = now;
@@ -166,7 +196,7 @@ export class Watch {
             ? String(reason) : "unknown";
           const code = record(m.error).code;
           if (typeof code === "number") t.errorCode = code;
-          console.log("[antigravity:prompt-end]", JSON.stringify({ ...t,
+          console.log("[antigravity:prompt-end]", JSON.stringify({ ...turnMetadata(t),
             openTools: [...s.tools.values()].filter(t => !t.detached).length }));
         }
         // Tool and approval completion comes from explicit wire/SDK events, not
@@ -177,6 +207,8 @@ export class Watch {
       const s = this.session(sid);
       s.approvals.add(id);
       this.permissions.set(id, sid);
+      if (!s.replay && this.turn?.nativeSessionId === sid)
+        this.activity.incoming("permission", now);
     }
     if (m.method !== "session/update" || !sid) return;
     const u = record(p.update),
@@ -188,6 +220,11 @@ export class Watch {
     if (typeof u.toolCallId === "string" && s.retiredTools.has(u.toolCallId)) return;
     const turn = this.turn?.nativeSessionId === sid ? this.turn : undefined,
       content = record(u.content);
+    const priorTool = typeof u.toolCallId === "string" ? s.tools.get(u.toolCallId) : undefined;
+    // Carry-over tools retain their owner. Their completion (and retired echoes)
+    // must not look like progress by a newer, otherwise silent prompt.
+    if (turn && (!priorTool || priorTool.turn === turn))
+      this.activity.incoming(u.sessionUpdate, now);
     if (turn && u.sessionUpdate === "agent_message_chunk" &&
         content.type === "text" && typeof content.text === "string" && content.text.trim())
       turn.text = turn.trailingText = true;
@@ -244,6 +281,15 @@ export class Watch {
       // restored background work with no live tool event. Silence is not proof
       // of a stalled process. Only explicit Stop arms a prompt/approval deadline.
     }
-    return {};
+    const failure = this.activity.check(now, this.limits.cancel, this.counts());
+    return failure ? {failure} : {};
   }
+}
+
+/** Stable legacy log schema; new counters must not leak through object spreading. */
+export function turnMetadata(t: Turn) {
+  return {turnId:t.turnId, nativeSessionId:t.nativeSessionId, startedAt:t.startedAt,
+    responseAt:t.responseAt, stopReason:t.stopReason, errorCode:t.errorCode,
+    canceled:t.canceled, replaced:t.replaced, text:t.text, trailingText:t.trailingText,
+    results:t.results, completed:t.completed, failed:t.failed};
 }

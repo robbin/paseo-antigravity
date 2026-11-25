@@ -60,9 +60,11 @@ export function createTransport(
 ): OwnedTransport {
   if (process.platform === "win32")
     throw new Error("当前进程管理实现仅支持 macOS / Linux。");
-  for (const value of Object.values(limits))
-    if (!Number.isFinite(value) || value <= 0)
+  for (const [key, value] of Object.entries(limits)) {
+    if (key === "quietDiag" && value === undefined) continue;
+    if (value === undefined || !Number.isFinite(value) || value <= 0)
       throw new Error("Watch 时间限制必须是正数。");
+  }
   const child = spawn(launch.command, launch.args, {
     cwd: context.cwd,
     env: { ...launch.env, ...context.env },
@@ -92,6 +94,7 @@ export function createTransport(
   let closed = false,
     closing: Promise<void> | undefined,
     failure: string | undefined;
+  let rejectPendingWrite: (() => void) | undefined;
   let groupClosing: Promise<string | undefined> | undefined;
   const stopOwned = () => (groupClosing ??= stopProcessGroup(child.pid));
   let exitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -125,7 +128,11 @@ export function createTransport(
       toolResults.clear();
       clearInterval(timer);
       clearTimeout(exitTimer);
-      child.stdin.end();
+      // A Web Streams abort/close queues behind an in-flight write. Release it
+      // from this owned, out-of-band close path before waiting for process reap.
+      rejectPendingWrite?.();
+      child.stdin.destroy();
+      watch.activity.clear();
       try {
         const error = await stopOwned();
         if (error) {
@@ -216,7 +223,7 @@ export function createTransport(
   };
   const interval = Math.max(
     10,
-    Math.min(500, limits.startup, limits.cancel),
+    Math.min(500, limits.startup, limits.cancel, limits.quietDiag ?? 120_000),
   );
   let lastTick = Date.now();
   const timer = setInterval(() => {
@@ -284,15 +291,33 @@ export function createTransport(
         if (closed) throw new Error(failure ?? "Antigravity 连接已关闭。");
         loadBoundary.outgoing(frame);
         watch.observe("out", frame, Date.now());
-        return new Promise<void>((resolve, reject) =>
-          child.stdin.write(JSON.stringify(frame) + "\n", (error) => {
-            if (error) {
-              recordFailure("Antigravity 输入管道已关闭。");
-              drainThenClose();
-              reject(new Error(failure));
-            } else resolve();
-          }),
-        );
+        const seq = watch.activity.writeStart("method" in frame ? frame.method : undefined, Date.now());
+        return new Promise<void>((resolve, reject) => {
+          let settled = false;
+          const complete = (error?: Error | null) => {
+            if (settled) return;
+            settled = true;
+            rejectPendingWrite = undefined;
+            watch.activity.writeEnd(seq, !error, Date.now());
+            if (error) reject(new Error(failure ?? "Antigravity 连接已关闭。"));
+            else resolve();
+          };
+          rejectPendingWrite = () => complete(new Error("closed"));
+          try {
+            child.stdin.write(JSON.stringify(frame) + "\n", error => {
+              if (settled) return;
+              if (error && !closed) {
+                recordFailure("Antigravity 输入管道已关闭。");
+                drainThenClose();
+              }
+              complete(error);
+            });
+          } catch {
+            recordFailure("Antigravity 输入管道写入失败。");
+            drainThenClose();
+            complete(new Error("write failed"));
+          }
+        });
       },
       close,
       abort: close,

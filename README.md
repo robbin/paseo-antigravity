@@ -13,7 +13,7 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 | Failure mode | How Better Paseo Antigravity handles it |
 | --- | --- |
 | Silent stalls vs. long-running work | Waits silently without no-progress notices or silence-only termination. Completed tools can leave native background work running; use Stop when a session appears stuck. |
-| Hung stop/cancel & orphaned processes | Enforces a 5-second fallback deadline per canceled target, followed by time-bounded graceful ACP close and detached POSIX process-group cleanup (`SIGTERM` → 1s grace → `SIGKILL`). |
+| Hung stop/cancel & orphaned processes | Bounds explicit Stop delivery independently of the write queue, retains a 5-second fallback deadline per canceled target, followed by time-bounded graceful ACP close and detached POSIX process-group cleanup (`SIGTERM` → 1s grace → `SIGKILL`). |
 | Cancel races & stale tool tracking | Ignores idle cancels, isolates `session/load` replay from live tracking, scopes cancel deadlines per target, and retires tools only on explicit tool-terminal events. |
 | Swallowed root-cause errors | Records transport, watchdog, exit-code, and signal failure details before closing the stream so generic SDK errors never hide the real cause. |
 | Broken large history replay | Uses `agy >= 1.5.15`'s protocol-ordered `session/load` boundary with fragmented UTF-8 decoding and backpressure safety; live updates appear immediately after restore. |
@@ -50,6 +50,23 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
   - Keeps per-model thinking options, slash commands, skills, native/MCP tool-call mappings, and opt-in `Full access` mode.
   - Restores real CLI version + ACP handshake diagnostics in provider status checks and quota reporting via `agy -p /usage --output-format json`.
   - Status probes share a ~95-second cold-start budget across version checking and handshake, and preserve recognized sign-in diagnostics without exposing authorization URLs.
+
+## Diagnosing a quiet session
+
+Long thinking is not evidence of a deadlock. After roughly two minutes without live inbound activity or a completed local write, an active turn emits at most one `[antigravity:quiet]` log. It does not add a timeline notice, stop the task, or resend anything. Inspect plugin logs in Paseo Settings → Plugins → Logs.
+
+The snapshot reports observed state, not a diagnosis of the model service:
+
+- `pendingWrite` / `pendingWriteAgeMs`: a local write has not completed. Even a completed write does not prove that the CLI read or processed it.
+- `openPrompts > 0`: native prompt responses are still outstanding; thinking, tools, approvals or the upstream service may be involved.
+- `openPrompts === 0` while the turn remains active: the native prompt has returned, but the SDK may still be waiting for tools or other completion signals. A subsequent steer can increase this count again.
+- An existing empty/tool-only end notice means the turn ended without the expected final text, rather than necessarily still running.
+
+`[antigravity:stop]` logs track explicit Stop requests separately. Stop now has a local request-delivery fallback (5 seconds by default, plus timer scheduling), independent of the blocked write queue. Once the cancel reaches the transport, the existing per-target cancellation deadline still applies. These phases can overlap or run in sequence, followed by process-group cleanup; this is not a promise that every Stop finishes within exactly 5 seconds. Rejected and idle Stop requests must not arm a new deadline. A prompt still queued inside the SDK, with no started turn or observed cancellable work, remains outside this new guarantee.
+
+If a session appears stuck: note the time and last visible activity, press Stop, then reopen/restore the session if the connection was closed. Check what tools already executed before explicitly asking it to continue. Sending another message is not a reliable recovery operation: it can itself queue, replace a turn, or repeat work. No prompt is automatically retried. The new logs contain only allowlisted metadata, not prompt/reasoning/tool contents or raw stderr; this does not filter every error originating in the SDK.
+
+The reproducible fix concerns input backpressure blocking cancellation. It does not establish the cause of any particular Gemini/model/thinking-level incident. A source commit or merge does not update the plugin already loaded in the daemon.
 
 ## Requirements
 

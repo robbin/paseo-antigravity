@@ -14,7 +14,7 @@ import {
   type OwnedTransport,
 } from "./transport";
 import { vendor, options } from "./vendor";
-import { defaults, type Limits } from "./watch";
+import { defaults, turnMetadata, type Limits } from "./watch";
 import { normalizeSessionCwds } from "./session-cwd";
 import { checkCliVersion, cliVersion } from "./cli-version";
 
@@ -131,6 +131,16 @@ export function provider(
       const listeners = new Set<(e: ProviderEvent) => void>();
       const transports = new Map<string, OwnedTransport>();
       const failures = new Map<string, string>();
+      // All host request IDs share the SDK acknowledgement namespace, not only
+      // Stop IDs. Reserve before dispatch to reject collisions in either order.
+      const requests = new Map<string, symbol>();
+      const stops = new Map<string, { transport: OwnedTransport; token: number }>();
+      const settleStop = (id: string) => {
+        const stop = stops.get(id);
+        if (!stop) return;
+        stops.delete(id);
+        stop.transport.watch.activity.settleStop(stop.token);
+      };
       // send() acknowledges admission, not execution. prompt_result settles
       // each queued request, including failures reported asynchronously.
       const replacements = new Map<string, Set<string>>();
@@ -177,7 +187,13 @@ export function provider(
           );
           if (context.sessionId) transports.set(context.sessionId, transport);
           owned.add(transport);
-          void transport.finished.then(() => owned.delete(transport));
+          void transport.finished.then(() => {
+            owned.delete(transport);
+            for (const [id, stop] of stops)
+              if (stop.transport === transport) settleStop(id);
+            // SDK terminal events may arrive after process cleanup. Keep its Watch
+            // until session.closed/reopen so the terminal turn diagnostic survives.
+          });
           return transport.stream;
         },
       });
@@ -189,6 +205,12 @@ export function provider(
         throw e;
       }
       const off = core.onEvent((e) => {
+        if ((e.type === "request.completed" || e.type === "request.failed" ||
+            e.type === "catalog" || e.type === "sessions" || e.type === "session.ready") &&
+            typeof e.requestId === "string") {
+          requests.delete(e.requestId);
+          settleStop(e.requestId);
+        }
         if (e.type === "session.prompt_result")
           forgetReplacement(e.sessionId, e.clientMessageId);
         if (e.type === "session.closed" || e.type === "session.runtime_failed")
@@ -228,7 +250,7 @@ export function provider(
             // the queue at settlement, not when callers enqueue against an old turn.
             t.replaced ||= (replacements.get(e.sessionId)?.size ?? 0) > 0;
             console.log("[antigravity:turn-end]", JSON.stringify({ sessionId: e.sessionId,
-              state: e.state, ...t, endedAt: Date.now() }));
+              state: e.state, ...turnMetadata(t), endedAt: Date.now() }));
             const empty = !t.text && !t.results;
             if (e.state === "completed" && !t.canceled && !t.replaced &&
                 (empty || ((t.completed + t.failed) > 0 && !t.trailingText)))
@@ -243,7 +265,7 @@ export function provider(
                     : `本轮已结束，${t.failed ? "有前台工具执行失败" : "前台工具已完成"}，但之后没有返回正文；消息没有自动重发。`,
                 },
               });
-            watch.turn = undefined;
+            watch.endTurn(e.turnId);
           }
         }
         if (
@@ -266,10 +288,31 @@ export function provider(
         },
         send(input: ProviderInput) {
           if (closed) return Promise.reject(new Error("Provider 已关闭。"));
-          if (input.type === "session.interrupt") {
-            const turn = transports.get(input.sessionId)?.watch.turn;
-            if (turn) turn.canceled = true;
+          const requestId = "requestId" in input && typeof input.requestId === "string"
+            ? input.requestId : undefined;
+          if (requestId !== undefined && requests.has(requestId))
+            return Promise.reject(new Error("请求标识仍在使用中。"));
+          const reservation = Symbol();
+          // Capture identity before dispatch. Admission is async but immediate;
+          // its rejection rolls back only this provisional Stop token. Request
+          // completion may arrive before send().then(), so never arm in then().
+          let stopId: string | undefined;
+          let stopEntry: {transport: OwnedTransport; token: number} | undefined;
+          if (input.type === "session.interrupt" && typeof input.requestId === "string" &&
+              input.requestId.length > 0 && !stops.has(input.requestId)) {
+            const transport = transports.get(input.sessionId);
+            const token = transport?.watch.requestStop();
+            if (transport && token !== undefined) {
+              stopId = input.requestId;
+              stopEntry = {transport, token};
+              stops.set(stopId, stopEntry);
+            }
           }
+          const rollbackStop = () => {
+            if (requestId !== undefined && requests.get(requestId) === reservation)
+              requests.delete(requestId);
+            if (stopId !== undefined && stops.get(stopId) === stopEntry) settleStop(stopId);
+          };
           const replacement = input.type === "session.prompt" && input.prompt.delivery !== "steer"
             ? { sessionId: input.sessionId, id: input.prompt.clientMessageId } : undefined;
           if (replacement) {
@@ -288,13 +331,16 @@ export function provider(
                   cwd: "cwd" in input && input.cwd ? input.cwd : homedir(),
                   env: {},
                 };
+          if (requestId !== undefined) requests.set(requestId, reservation);
           try {
             return scope.run(context, () => core.send(input)).catch(error => {
               if (replacement) forgetReplacement(replacement.sessionId, replacement.id);
+              rollbackStop();
               throw error;
             });
           } catch (error) {
             if (replacement) forgetReplacement(replacement.sessionId, replacement.id);
+            rollbackStop();
             return Promise.reject(error);
           }
         },
@@ -325,6 +371,8 @@ export function provider(
               transports.clear();
               failures.clear();
               replacements.clear();
+              stops.clear();
+              requests.clear();
             }
             // Do not wait indefinitely for an SDK operation stuck outside the transport.
             void graceful.catch(() => {});
