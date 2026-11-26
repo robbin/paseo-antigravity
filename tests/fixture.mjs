@@ -15,32 +15,6 @@ if (process.argv.includes("--version")) {
   console.log(process.env.CLI_VERSION ?? "1.5.15");
   process.exit(0);
 }
-if (process.argv.includes("/usage")) {
-  console.log(
-    JSON.stringify({
-      status: "SUCCESS",
-      command: {
-        name: "usage",
-        data: {
-          groups: [
-            {
-              name: "Gemini models",
-              buckets: [
-                {
-                  id: "5h",
-                  name: "5h Remaining",
-                  window: "5h",
-                  remaining_fraction: 0.75,
-                },
-              ],
-            },
-          ],
-        },
-      },
-    }),
-  );
-  process.exit(0);
-}
 let pending;
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line),
@@ -192,7 +166,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         }
         if (["final", "duplicate", "deferred-final"].includes(mode)) say();
         if (mode === "duplicate") u({sessionUpdate:"tool_call_update",toolCallId:"a",status:"completed"});
-        // Usage closes the SDK's post-response reply block, without changing Watch text state.
+        // A native ACP usage_update closes the SDK's post-response reply block.
+        // This is session protocol coverage, not a plan-quota query.
         if (mode === "deferred-final") u({sessionUpdate:"usage_update",used:1,size:100});
         if (!mode.startsWith("deferred") && mode !== "hold") { end(); pending = undefined; }
         flush();

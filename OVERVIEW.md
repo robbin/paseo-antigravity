@@ -23,12 +23,14 @@ Select Better Paseo Antigravity when creating a new agent. Existing sessions cre
 - **Paseo**: `>=0.17.3 <0.18.0`.
 - **Antigravity CLI**: Official `agy` `>=1.5.15` installed and signed in on the daemon host (`1.5.16` recommended for its upstream subagent approval/question forwarding fix).
 
-Provider status checks verify the `agy` CLI version and perform an ACP handshake within a shared ~95-second cold-start budget. Recognized sign-in failures are reported without printing authorization URLs. Account eligibility and model access are still verified when opening a session. Usage quotas are queried through `agy -p /usage --output-format json` using your existing CLI login and environment.
+Provider status checks verify the `agy` CLI version and perform an ACP handshake within a shared ~95-second cold-start budget. Recognized sign-in failures are reported without printing authorization URLs. Account eligibility and model access are still verified when opening a session.
 
 Full access is an SDK auto-approval mode backed by native default, not native Auto. Ambiguous allow options (including repeated allow_always kinds) fall back to manual approval. The current SDK does not forward permission response message/updatedInput fields; free-text subagent answers are unsupported. Concurrent pending approvals with the same toolCallId in one native session may collide. Steering is available only in SDK-deferred turns, not necessarily while a native background prompt remains open. Command names without classification metadata remain unclassified rather than being assumed to be skills.
 
-Usage queries include session environment overrides. Custom ACP `--app-data-dir` / `--gemini-dir` / `--cli_dir_name` (including underscore aliases) configurations currently report an unsupported-query error instead of querying the default account. API Key no-quota classification and host/UI dismissal after a restored-approval Stop timeout remain unverified.
+Host/UI dismissal after a restored-approval Stop timeout remains unverified.
+
+Plan-quota queries have been removed to comply with Google Antigravity's ToS restrictions: external clients must use the official ACP protocol. The plugin retains only the ACP provider and does not wrap or poll `agy -p /usage`. Quota reporting will only be reconsidered if official ACP exposes a supported quota capability.
 
 ## Privacy and boundaries
 
-Prompts, tool outputs, and usage queries go to Google's Antigravity backend through the local official `agy` CLI using your existing sign-in. The plugin does not create a separate OAuth flow, account directory, or network proxy. It does not copy or store credentials, and it does not overwrite `GEMINI_HOME`, `SSH_*`, or `BROWSER`. It does not read private native session SQLite databases or transcripts. Progress notices inserted by older versions remain in timeline history. Account eligibility, rate limits, and network failures cannot be bypassed by the plugin.
+Prompts and tool outputs go to Google's Antigravity backend through the local official `agy` CLI using your existing sign-in. The plugin does not create a separate OAuth flow, account directory, or network proxy. It does not copy or store credentials, and it does not overwrite `GEMINI_HOME`, `SSH_*`, or `BROWSER`. It does not read private native session SQLite databases or transcripts. Progress notices inserted by older versions remain in timeline history. Account eligibility, rate limits, and network failures cannot be bypassed by the plugin.

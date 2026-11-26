@@ -1,6 +1,6 @@
 # Better Paseo Antigravity
 
-A stability-first [Paseo](https://paseo.sh) plugin providing a hardened ACP provider and official usage quota source (`better-paseo-antigravity`) for Google's official Antigravity CLI (`agy acp`).
+A stability-first [Paseo](https://paseo.sh) plugin providing a hardened ACP provider (`better-paseo-antigravity`) for Google's official Antigravity CLI (`agy acp`).
 
 ## Built for Long-Session Reliability
 
@@ -45,10 +45,10 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 - **EOF, EPIPE, and backpressure safety**
   - Flushes `StringDecoder` and parses trailing newline-free frames on EOF.
   - Avoids discarding queued replies on `EPIPE` and respects consumer backpressure without manufacturing premature EOF.
-- **Full official CLI compatibility and quota reporting**
+- **Official ACP compatibility and provider diagnostics**
   - Reuses your existing `agy` login, config, and environment (`GEMINI_HOME`, `SSH_*`, and `BROWSER` are never overwritten).
   - Keeps per-model thinking options, slash commands, skills, native/MCP tool-call mappings, and opt-in `Full access` mode.
-  - Restores real CLI version + ACP handshake diagnostics in provider status checks and quota reporting via `agy -p /usage --output-format json`.
+  - Restores real CLI version + ACP handshake diagnostics in provider status checks.
   - Status probes share a ~95-second cold-start budget across version checking and handshake, and preserve recognized sign-in diagnostics without exposing authorization URLs.
 
 ## Diagnosing a quiet session
@@ -104,29 +104,21 @@ paseo plugin update better-paseo-antigravity
 2. Choose your model, thinking level, and permission mode (`Full access` is available as an opt-in mode and is not enabled by default).
 3. Existing sessions created with Paseo's built-in Antigravity provider are not automatically migrated.
 
-## Usage query errors
+## Important: Quota queries removed in v0.4.0
 
-Usage still runs the official `agy -p /usage --output-format json` command. Recognized
-JSON errors are classified even when the CLI exits nonzero: account/location
-eligibility rejection is distinct from a sign-in requirement. Missing executables,
-execute permissions, output limits, timeout/interruption, and unknown nonzero exits
-have separate diagnostics. Raw stdout, stderr, account identifiers and authorization
-URLs from failures are not displayed or attached as an error cause.
+> **Breaking change (account safety & ToS compliance):** Starting in `v0.4.0`, this plugin no longer provides a plan-quota usage source and no longer executes `agy -p /usage`.
 
-Interactive `/usage` and ACP model access can work even when the headless usage
-command is rejected. Such a rejection does not by itself mean the account is signed
-out or its quota is exhausted. This fix reports the failure more accurately; it does
-not change the official CLI's eligibility checks or restore rejected queries. There
-is no automatic interactive fallback, PTY adapter, or new Python dependency.
+Google's Antigravity team has clarified that external clients are only supported through the official ACP protocol, and that wrapping or polling `agy -p` inside third-party tools or background loops violates the Antigravity Terms of Service and can result in account flags or suspension. To protect user accounts, plan-quota queries have been completely removed with no interactive, PTY, or private-API fallback.
 
-Thanks to [lightSky's report and PR #3](https://github.com/robbin/paseo-antigravity/pull/3)
-for identifying the discarded structured error and proposing safe classification.
+- **If you are on `v0.3.x`**, please update to `v0.4.0` (`paseo plugin update better-paseo-antigravity`) to stop background `agy -p /usage` calls.
+- **What still works**: Only the hardened ACP provider (`agy acp`), CLI version checks, and ACP handshake diagnostics remain.
+- **How to check quota manually**: Run the official `agy` CLI interactively in your own terminal and use `/usage`, or check inside the official Antigravity client.
+- **Future support**: Quota reporting will only be reconsidered if the official ACP protocol exposes a supported quota capability. Native ACP `usage_update` notifications remain part of the session protocol, not a separate account-quota query.
 
 ## Known Boundaries
 
 - Earlier than `agy 1.5.15` is unsupported; provider status and each new connection check the minimum version. `1.5.16` is recommended for its upstream subagent approval/question forwarding fix, but is not required.
 - Full access is an SDK auto-approval mode backed by native default, not native Auto. Ambiguous allow options (including repeated allow_always kinds) fall back to manual approval. The current SDK does not forward permission response message/updatedInput fields; free-text subagent answers are unsupported. Concurrent pending approvals with the same toolCallId in one native session may collide. Steering is available only in SDK-deferred turns, not necessarily while a native background prompt remains open.
-- Usage queries merge session environment overrides. Custom ACP `--app-data-dir` / `--gemini-dir` / `--cli_dir_name` (including underscore aliases) configurations currently report a safe query error rather than querying the default account. API Key no-quota classification is not yet verified; exit code 2 alone is not treated as evidence of no quota.
 - On restored-approval Stop timeout, the SDK releases permission promises and emits runtime failure. Actual host/UI dismissal has not been validated.
 - Commands remain executable; unknown command/skill names are left unclassified when ACP provides no provenance.
 - Does not create a custom OAuth flow, proxy, or credential store; sign in using the official `agy` CLI on the host.
@@ -151,4 +143,4 @@ pnpm test:live --confirm-live
 
 ## License
 
-Portions derived from Paseo's ACP provider and usage patterns remain under the Apache License 2.0 (see [LICENSE-Paseo](./LICENSE-Paseo)).
+Portions derived from Paseo's ACP provider patterns remain under the Apache License 2.0 (see [LICENSE-Paseo](./LICENSE-Paseo)).

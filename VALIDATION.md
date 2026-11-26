@@ -1,6 +1,17 @@
 # Better Paseo Antigravity validation
 
-## 0.3.5 release: safe usage error diagnostics
+## 0.4.0 release: ACP-only integration (quota queries removed)
+
+- Breaking change for account safety and ToS compliance: removed the plan-quota usage source (`server/usage.ts` and `registerUsageSource`) because Google Antigravity's ToS requires external clients to use the official ACP protocol and prohibits wrapping or background-polling `agy -p` in third-party tools. There is no interactive, PTY, or private-API fallback; quota reporting will only be reconsidered if official ACP exposes a supported quota capability.
+- The entry now registers only the ACP provider. Removed the quota implementation, query-only tests and headless-query fixture branch. Preserved all five status/installation tests in `tests/status.test.ts`, including handshake, safe login diagnostics, cold-start budget, timeout and custom command-prefix checks.
+- Added `tests/contribute.test.ts`, which rejects every context API except `registerProvider` and verifies exactly one ACP provider registration and its cleanup. It failed against the previous usage registration and passes after removal.
+- Retained native ACP `usage_update` fixtures and Watch coverage: these test session protocol behavior, not external account-quota queries. Other service code has no quota-source references.
+- Verification: `pnpm typecheck`, all 223 tests from `pnpm test` (no failures/skips/cancellations), and `git diff --check` pass on the pinned SDK 0.17.3 after both implementation and independent code review. A repository-wide search found no remaining quota-query implementation or registration; matches are removal/historical documentation, the provider-only contribution guard, and native ACP session-update tests.
+- Scope: Git source, `v0.4.0` tag and GitHub Release only. No dependency or compatibility-range change, live account query, model prompt, npm publication, installed-plugin update/reload or daemon restart is included.
+
+All release records below are historical. Their quota-query implementations, tests, live probe results and quota-specific follow-ups are superseded by this removal and do not describe current capabilities or pending work.
+
+## 0.3.5 release: safe usage error diagnostics (historical; feature removed)
 
 - Reports recognized account/location eligibility and sign-in failures from official headless usage JSON even on nonzero exit. Missing executables, permissions, output limits, timeout/interruption and unknown exits have separate safe diagnostics; raw stdout/stderr and error causes are not exposed.
 - The original discarded-error defect was reproduced with a real subprocess before fixing it. Thanks to lightSky's report and PR #3 for identifying the issue and proposing safe classification. This release does not include that PR's optional PTY adapter.

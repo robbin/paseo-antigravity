@@ -133,7 +133,8 @@ test("unrelated session activity does not affect a silent prompt", () => {
   update(w, "alien", "in_progress", 149, "other");
   assert.deepEqual(w.check(90000000), {});
 });
-test("usage heartbeats are not needed to keep a prompt alive", () => {
+// Native ACP notifications remain supported; no external quota query is involved.
+test("ACP usage_update does not introduce a prompt inactivity deadline", () => {
   const w = new Watch(limits);
   out(w, 1);
   w.observe(
