@@ -1,8 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { performance } from "node:perf_hooks";
 
 export interface GroupOps {
   signal(signal: NodeJS.Signals | 0): void;
   sleep(ms: number): Promise<void>;
+  /** Monotonic elapsed time, not wall-clock time. */
   now(): number;
 }
 /** ESRCH is terminal: never signal that numeric group again after it has disappeared. */
@@ -53,7 +55,7 @@ export function stopProcessGroup(pid: number | undefined, graceMs = 1000) {
             process.kill(-pid, s);
           },
           sleep,
-          now: Date.now,
+          now: () => performance.now(),
         },
         graceMs,
       );

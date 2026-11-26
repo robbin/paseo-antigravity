@@ -18,6 +18,9 @@ import { defaults, turnMetadata, type Limits } from "./watch";
 import { normalizeSessionCwds } from "./session-cwd";
 import { checkCliVersion, cliVersion } from "./cli-version";
 
+// Capture diagnostics per request object so reused IDs cannot inherit old failures.
+interface RequestState { failure?: string }
+
 export function provider(
   testOptions: {
     limits?: Limits;
@@ -126,14 +129,14 @@ export function provider(
       if (!request.launch) throw new Error("缺少官方 CLI 启动配置。");
       const launch = request.launch;
       await (testOptions.checkVersion ?? checkCliVersion)(launch);
-      const scope = new AsyncLocalStorage<Context>();
+      const scope = new AsyncLocalStorage<Context & { request?: RequestState }>();
       const owned = new Set<OwnedTransport>();
       const listeners = new Set<(e: ProviderEvent) => void>();
       const transports = new Map<string, OwnedTransport>();
       const failures = new Map<string, string>();
       // All host request IDs share the SDK acknowledgement namespace, not only
       // Stop IDs. Reserve before dispatch to reject collisions in either order.
-      const requests = new Map<string, symbol>();
+      const requests = new Map<string, RequestState>();
       const stops = new Map<string, { transport: OwnedTransport; token: number }>();
       const settleStop = (id: string, rejected = false) => {
         const stop = stops.get(id);
@@ -181,6 +184,7 @@ export function provider(
             },
             testOptions.limits,
             (message) => {
+              if (context.request) context.request.failure ??= message;
               if (context.sessionId && !failures.has(context.sessionId))
                 failures.set(context.sessionId, message);
             },
@@ -205,6 +209,8 @@ export function provider(
         throw e;
       }
       const off = core.onEvent((e) => {
+        const requestFailure = e.type === "request.failed"
+          ? requests.get(e.requestId)?.failure : undefined;
         if ((e.type === "request.completed" || e.type === "request.failed" ||
             e.type === "catalog" || e.type === "sessions" || e.type === "session.ready") &&
             typeof e.requestId === "string") {
@@ -222,10 +228,11 @@ export function provider(
             sessions: normalizeSessionCwds(e.sessions),
           };
         if (
+          e.type === "request.failed" ||
           e.type === "session.runtime_failed" ||
           (e.type === "session.turn" && e.state === "failed")
         ) {
-          const reason = failures.get(e.sessionId);
+          const reason = e.type === "request.failed" ? requestFailure : failures.get(e.sessionId);
           if (
             reason &&
             [
@@ -293,7 +300,7 @@ export function provider(
             ? input.requestId : undefined;
           if (requestId !== undefined && requests.has(requestId))
             return Promise.reject(new Error("请求标识仍在使用中。"));
-          const reservation = Symbol();
+          const reservation: RequestState = {};
           // Capture identity before dispatch. Admission is async but immediate;
           // its rejection rolls back only this provisional Stop token. Request
           // completion may arrive before send().then(), so never arm in then().
@@ -329,12 +336,13 @@ export function provider(
                   sessionId: input.sessionId,
                 }
               : {
-                  cwd: "cwd" in input && input.cwd ? input.cwd : homedir(),
+                  // sessions.cwd is an ACP query filter, not a launch directory.
+                  cwd: input.type === "catalog" && input.cwd ? input.cwd : homedir(),
                   env: {},
                 };
           if (requestId !== undefined) requests.set(requestId, reservation);
           try {
-            return scope.run(context, () => core.send(input)).catch(error => {
+            return scope.run({ ...context, request: reservation }, () => core.send(input)).catch(error => {
               if (replacement) forgetReplacement(replacement.sessionId, replacement.id);
               rollbackStop();
               throw error;
