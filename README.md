@@ -104,6 +104,24 @@ paseo plugin update better-paseo-antigravity
 2. Choose your model, thinking level, and permission mode (`Full access` is available as an opt-in mode and is not enabled by default).
 3. Existing sessions created with Paseo's built-in Antigravity provider are not automatically migrated.
 
+## Usage query errors
+
+Usage still runs the official `agy -p /usage --output-format json` command. Recognized
+JSON errors are classified even when the CLI exits nonzero: account/location
+eligibility rejection is distinct from a sign-in requirement. Missing executables,
+execute permissions, output limits, timeout/interruption, and unknown nonzero exits
+have separate diagnostics. Raw stdout, stderr, account identifiers and authorization
+URLs from failures are not displayed or attached as an error cause.
+
+Interactive `/usage` and ACP model access can work even when the headless usage
+command is rejected. Such a rejection does not by itself mean the account is signed
+out or its quota is exhausted. This fix reports the failure more accurately; it does
+not change the official CLI's eligibility checks or restore rejected queries. There
+is no automatic interactive fallback, PTY adapter, or new Python dependency.
+
+Thanks to [lightSky's report and PR #3](https://github.com/robbin/paseo-antigravity/pull/3)
+for identifying the discarded structured error and proposing safe classification.
+
 ## Known Boundaries
 
 - Earlier than `agy 1.5.15` is unsupported; provider status and each new connection check the minimum version. `1.5.16` is recommended for its upstream subagent approval/question forwarding fix, but is not required.

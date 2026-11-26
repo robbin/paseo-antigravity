@@ -40,6 +40,57 @@ const response = z.object({
     .optional(),
 });
 
+// Failure envelopes need not contain a valid success payload (command can be null).
+// Only recognized official JSON errors are classified; raw output is never shown.
+const failureResponse = z.object({
+  status: z.literal("ERROR"),
+  error: z.string().nullish(),
+  response: z.string().nullish(),
+});
+
+function usageJson(stdout: unknown): unknown {
+  if (typeof stdout !== "string") return undefined;
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+function usageDiagnostic(value: unknown): string | undefined {
+  const parsed = failureResponse.safeParse(value);
+  if (!parsed.success) return undefined;
+  const detail = `${parsed.data.error ?? ""}\n${parsed.data.response ?? ""}`;
+  if (/\bnot (?:currently )?available in your location\b|\bnot eligible\b|\blocation is not supported\b/i.test(detail))
+    return "Headless agy /usage was rejected by its account/location eligibility check. Interactive /usage may behave differently; this does not by itself mean you are signed out.";
+  if (/\bauthentication required\b|\bnot (?:logged|signed) in\b|\bplease (?:log|sign) in\b|\blogin required\b/i.test(detail))
+    return "Antigravity usage requires sign-in. Run agy in a terminal on this host and complete sign-in.";
+  return undefined;
+}
+
+function commandFailure(error: unknown): Error {
+  const failure = error !== null && typeof error === "object"
+    ? error as { code?: unknown; killed?: unknown; signal?: unknown; stdout?: unknown }
+    : {};
+  // Process failures take precedence over any partial JSON emitted before exit.
+  // Do not retain the original error/cause: it may include stderr or credentials.
+  if (failure.code === "ENOENT")
+    return new Error("Antigravity usage executable was not found. Check the daemon PATH or the configured command.");
+  if (failure.code === "EACCES" || failure.code === "EPERM")
+    return new Error("Antigravity usage executable could not be started. Check its execute permission and host policy.");
+  if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
+    return new Error("Antigravity usage output exceeded the size limit.");
+  if (failure.killed === true)
+    return new Error("Antigravity usage exceeded the 18-second timeout or was interrupted.");
+  if (typeof failure.signal === "string")
+    return new Error("Antigravity usage command was interrupted by a signal.");
+  const diagnostic = usageDiagnostic(usageJson(failure.stdout));
+  if (diagnostic) return new Error(diagnostic);
+  const exit = typeof failure.code === "number" && Number.isInteger(failure.code)
+    ? ` (exit ${failure.code})` : "";
+  return new Error(`Antigravity usage command failed${exit}. Check the official CLI on this host.`);
+}
+
 // These ACP-only options have no verified equivalent for the top-level /usage
 // command. Never silently query the default account when they are present.
 function directoryArgs(args: readonly string[]): string[] {
@@ -152,14 +203,15 @@ export class Usage {
               maxBuffer: 1024 * 1024,
             },
           );
-        } catch {
-          throw new Error(
-            "Antigravity usage command failed or timed out. Check that agy is signed in.",
-          );
+        } catch (error) {
+          throw commandFailure(error);
         }
+        const payload = usageJson(result.stdout);
+        const diagnostic = usageDiagnostic(payload);
+        if (diagnostic) throw new Error(diagnostic);
         let data: z.infer<typeof response>;
         try {
-          data = response.parse(JSON.parse(result.stdout));
+          data = response.parse(payload);
         } catch {
           throw new Error("Antigravity usage returned invalid data.");
         }

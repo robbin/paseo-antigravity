@@ -1,5 +1,15 @@
 # Better Paseo Antigravity validation
 
+## 0.3.5 release: safe usage error diagnostics
+
+- Reports recognized account/location eligibility and sign-in failures from official headless usage JSON even on nonzero exit. Missing executables, permissions, output limits, timeout/interruption and unknown exits have separate safe diagnostics; raw stdout/stderr and error causes are not exposed.
+- The original discarded-error defect was reproduced with a real subprocess before fixing it. Thanks to lightSky's report and PR #3 for identifying the issue and proposing safe classification. This release does not include that PR's optional PTY adapter.
+- Error envelopes are validated independently of success quota payloads. The first read-only Neon review identified a null-field edge case; eight new cases failed before the follow-up fix and pass afterward. The diagnostic envelope now accepts null error/response fields, without relaxing success-payload validation. Tests cover both fields, both exit statuses, eligibility and sign-in, null command payloads and privacy sentinels.
+- Neon's second independent read-only review found no confirmed blocker for commit/publication. It rechecked the source, new tests, red/green logs and version/validation notes, and independently passed typecheck and diff check; it did not rerun the complete test suite. Low-priority timing-test, priority-test coverage and README wording suggestions remain non-blocking.
+- Final automated checks: typecheck, all 285 tests (no failures/skips/cancellations), and diff check pass on the pinned SDK 0.17.3. Subprocess regressions include output overflow, execute permissions, signals, an actual 18-second timeout, malformed JSON and nonzero success-looking output. No dependencies or compatibility requirements changed.
+- Before the null-field follow-up, a direct source-level real agy 1.5.17 headless query returned available with four quota windows in 8.933 seconds on macOS. The original account/location rejection was not reproduced on this host; synthetic subprocess failures validate its diagnostic handling. No new model prompts, UI checks or running-plugin deployment were performed.
+- Scope: Git source, v0.3.5 tag and GitHub Release only. No Python/PTY fallback, npm publication, eligibility bypass, login changes, installed-plugin update/reload or daemon restart. This fixes error reporting, not the upstream eligibility rejection.
+
 ## 0.3.4 release: bounded Stop delivery and safe diagnostics
 
 - Maintenance release covering 07cf333 and e7e286a. Final suite: 246 tests, typecheck and diff check. Development dependencies and compatibility requirements are unchanged.
