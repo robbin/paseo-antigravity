@@ -1,5 +1,13 @@
 # Better Paseo Antigravity validation
 
+## 0.4.3 release: Paseo 0.18.0 compatibility without an upper bound
+
+- Reproduced on the local Paseo 0.18.0 daemon: the directory-installed plugin was `failed` solely because its manifest required `>=0.17.3 <0.18.0`.
+- Changed `requirements.paseo` to `>=0.17.3`, retaining support for 0.17.3 itself without excluding later releases. Updated README and both overview documents. The development SDK remains pinned to 0.17.3; no dependency or provider implementation changed.
+- Added `tests/manifest.test.ts` to guard the minimum-only range. It failed against the original manifest and passes after the fix. `pnpm typecheck`, all 234 automated tests (no failures/skips/cancellations), and `git diff --check` pass.
+- Reloaded only `better-paseo-antigravity` on the existing 0.18.0 daemon: status changed to `running` with no load error. Provider diagnostics reported official agy 1.5.18, a successful ACP handshake, and `Status: Ready`; the daemon returned all 11 models and their thinking options.
+- Scope: automated tests use the pinned 0.17.3 development SDK; 0.18.0 runtime checks cover plugin loading, provider diagnostics, ACP handshake and model discovery. No live model prompts, long-session/cancellation checks on 0.18.0, UI validation, existing-session changes, or daemon restart. Release scope: Git source, `v0.4.3` tag, GitHub Release and a registry update submission; registry publication requires upstream review and merge. No npm publication. Removing the version gate is not a guarantee against future API-breaking releases. Earlier version limits below are historical records, not current requirements.
+
 ## 0.4.0 release: ACP-only integration (quota queries removed)
 
 - Breaking change for account safety and ToS compliance: removed the plan-quota usage source (`server/usage.ts` and `registerUsageSource`) because Google Antigravity's ToS requires external clients to use the official ACP protocol and prohibits wrapping or background-polling `agy -p` in third-party tools. There is no interactive, PTY, or private-API fallback; quota reporting will only be reconsidered if official ACP exposes a supported quota capability.

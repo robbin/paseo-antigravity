@@ -71,7 +71,7 @@ The reproducible fix concerns input backpressure blocking cancellation. It does 
 ## Requirements
 
 - **OS**: macOS or Linux (Windows is not currently supported due to POSIX process-group signaling)
-- **Paseo**: `>=0.17.3 <0.18.0`
+- **Paseo**: `>=0.17.3`
 - **Antigravity CLI**: Official `agy` `>=1.5.15`, installed and signed in on the daemon host
 
 ## Installation

@@ -23,7 +23,7 @@ Select Better Paseo Antigravity when creating a new agent. Existing sessions cre
 ## Setup and requirements
 
 - **OS**: macOS or Linux (Windows is unsupported due to POSIX process-group signaling).
-- **Paseo**: `>=0.17.3 <0.18.0`.
+- **Paseo**: `>=0.17.3`.
 - **Antigravity CLI**: Official `agy` `>=1.5.15` installed and signed in on the daemon host (`1.5.16` recommended for its upstream subagent approval/question forwarding fix).
 
 Provider status checks verify the `agy` CLI version and perform an ACP handshake within a shared ~95-second cold-start budget. Recognized sign-in failures are reported without printing authorization URLs. Account eligibility and model access are still verified when opening a session.
