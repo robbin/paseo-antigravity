@@ -1,17 +1,20 @@
 # Better Paseo Antigravity
 
-Built for long-session reliability, not feature bloat. Better Paseo Antigravity wraps the official, locally signed-in `agy acp` CLI through Paseo's ACP SDK to keep multi-hour agent runs stable without modifying your CLI login, touching private session databases, or reinventing the protocol.
+A stability and reliability enhancement over Paseo's built-in Antigravity ACP provider. Better Paseo Antigravity wraps the same official, locally signed-in `agy acp` CLI through Paseo's official ACP SDK, focusing on fixing transport, lifecycle, cancellation, and state-tracking bugs that occur in long coding sessions—without feature bloat, modifying your CLI login, touching private session databases, or diverging from the official protocol.
 
-## Reliability first
+## Comparison with the built-in Antigravity ACP provider
 
-| Common failure mode | How Better Paseo Antigravity handles it |
+Both providers run the official `agy acp` CLI on top of Paseo's ACP SDK and share the same model selection, thinking options, slash commands, skills, tool approvals, and session resume workflow. Better Paseo Antigravity hardens the layer between Paseo and `agy acp` so long-running sessions stay stable and recover cleanly where the built-in ACP provider can stall, drop errors, or leak processes.
+
+| Built-in Antigravity ACP provider issue | Better Paseo Antigravity enhancement |
 | --- | --- |
 | Long-running tools or approvals killed for silence | Waits silently without no-progress notices or termination based only on silence. Completed tool calls can leave background work running; use Stop if a session appears stuck. |
-| Hung stop/cancel requests and orphaned processes | Targets only the in-flight requests, foreground tools and approvals active at cancel time (including restored approvals without an active turn), each with a 5-second fallback deadline. Shutdown runs a time-bounded graceful ACP close followed by detached POSIX process-group cleanup. Later requests never inherit an old cancel deadline. |
+| Hung stop/cancel requests and orphaned processes | Bounds explicit Stop delivery independently of a blocked write queue, targets only the in-flight requests, foreground tools, and approvals active at cancel time (including restored approvals without an active turn) with a 5-second fallback deadline, and runs a time-bounded graceful ACP close followed by detached POSIX process-group cleanup. Later requests never inherit an old cancel deadline. |
 | Swallowed root-cause errors on disconnect | Captures the underlying transport, watchdog, exit-code, or signal diagnostics before closing the stream so generic SDK errors do not hide the real cause. |
 | Truncated or stalled large history replays | Follows the native `session/load` boundary in `agy >= 1.5.15`, preserving wire order, fragmented UTF-8 decoding, and backpressure without waiting for stream silence. Live updates appear immediately after restore without requiring a new prompt. |
 | False timeouts after laptop sleep/wake | Detects host suspend and clock jumps (>5s timer gap), rebasing pre-sleep work (including work started in the final timer slice before suspend) while keeping fresh post-wake deadlines intact. |
 | Background tools cleared when a turn finishes | Retires tool state only on explicit tool-terminal events so background tools preserved for follow-up turns keep running. |
+| Unverified CLI readiness or vague status errors | Provider status checks verify the `agy` CLI version (`>=1.5.15`) and perform an ACP handshake within a shared ~95-second cold-start budget, reporting recognized sign-in failures without printing authorization URLs. |
 
 ## How it works
 
