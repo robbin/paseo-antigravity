@@ -61,6 +61,7 @@ readline.createInterface({input: process.stdin}).on("line", line => {
     if (scenario === "daemon") {tool({name: "run_command", rawInput: {IsDaemon: true}}); return;}
     if (scenario === "subagent" || scenario === "schedule") {tool({name: scenario === "subagent" ? "invoke_subagent" : "schedule"}); return;}
     if (scenario === "tool-recover") tool({name: "run_command", rawOutput: {exit_code: 0, output: "PRIVATE_RESULT"}});
+    else if (scenario === "read-docs-recover") tool({name: "read_file", kind: "read", rawOutput: "Tool is running as a background task\ntask id: DOCS_LITERAL"});
     else text("PRIVATE_THOUGHT", true);
   }
   if (m.method === "session/cancel" && pending !== undefined && scenario !== "ignore") {

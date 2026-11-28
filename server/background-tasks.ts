@@ -31,6 +31,7 @@ export class BackgroundTasks {
   // resurrecting a scope already released at a normal turn boundary/process exit.
   private released = new Set<string>();
   get size() { return this.pending.size; }
+  has(id: string) { return this.pending.has(id); }
 
   endTurn(turnId: string) {
     for (const guard of this.pending.values())
@@ -49,13 +50,26 @@ export class BackgroundTasks {
     this.pending.delete(id);
     this.released.add(id);
   }
-  observe(id: string, name: string | undefined, update: Record<string, unknown>, turnId?: string) {
+  observe(
+    id: string,
+    name: string | undefined,
+    update: Record<string, unknown>,
+    turnId?: string,
+    toolKind?: string,
+  ) {
     if (this.released.has(id)) return;
     const input = record(update.rawInput), old = this.pending.get(id);
-    const backgroundText = texts(update).some(text =>
+    // Only shell/command tools (or unnamed non-file/search tools) can launch a
+    // background task via output prose. File reads/edits/MCP outputs may quote
+    // literal strings such as "Tool is running as a background task" or "task id:".
+    const canEmitBackgroundText = name === "run_command" ||
+      (name === undefined && (toolKind === undefined || toolKind === "execute" || toolKind === "other"));
+    const backgroundText = canEmitBackgroundText && texts(update).some(text =>
       /Tool is running as a background task|\btask\s+id\s*:/i.test(text));
-    const persistent = input.IsDaemon === true || (name === "schedule" &&
-      typeof input.CronExpression === "string" && input.CronExpression.trim().length > 0);
+    const persistent =
+      (canEmitBackgroundText && input.IsDaemon === true) ||
+      (name === "schedule" &&
+        typeof input.CronExpression === "string" && input.CronExpression.trim().length > 0);
     const exit = record(update.rawOutput).exit_code;
     if (old && (old.scope === "transport" || old.kind === "command") && !backgroundText &&
         typeof exit === "number" && Number.isFinite(exit) &&

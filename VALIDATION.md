@@ -1,5 +1,16 @@
 # Better Paseo Antigravity validation
 
+## 0.5.1 release: English runtime messages and non-command background-guard fix
+
+### Motivation & changes
+
+- **Bug fix (non-command background-guard false positive)**: Reproduced in a live 0.5.0 session where calling `read_file` on `docs/sse-stall-recovery.md` returned the literal text `Tool is running as a background task` and `task id:`, causing `BackgroundTasks` to arm a turn-scoped guard and block 150-second SSE stall recovery for the rest of that turn. `BackgroundTasks` now scans background-launch text only for `run_command` or unnamed non-file/search tools (tracking `kind` across `tool_call` → `tool_call_update` in `Watch` and ignoring retired echoes of non-background tools), and restricts `IsDaemon` persistence to `run_command` / unnamed tools.
+- **English runtime localization**: Unified all user-visible runtime notices, errors, CLI diagnostics, provider descriptions, and the `[System Auto-Recovery]` continuation prompt in `server/*.ts` to clear English (with `Continue in the same language as the conversation.` so resumed turns preserve the user's language). Updated existing test assertions to match English diagnostics while preserving all CJK/UTF-8 stream and path fidelity tests.
+
+### Automated verification
+
+- `git diff --check`, `npm run typecheck`, and 343/343 automated tests (0 failures, 0 skipped, 0 canceled; including 10 new unit and real-SDK regression tests for `read_file` / `edit_file` / `write_file` / `search_web` / `mcp_*` / unnamed `kind: read|edit|search` / retired echoes quoting background prose) pass on the pinned `@getpaseo/plugin` 0.17.3 SDK.
+
 ## 0.5.0 release: guarded upstream SSE stall recovery
 
 ### Motivation / 动机

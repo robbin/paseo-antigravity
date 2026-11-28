@@ -87,8 +87,8 @@ for (const restore of [false, true]) for (const scenario of ["exit", "signal", "
       const event = await h.send(open("open", "s", scenario, restore));
       assert.equal(event.type, "request.failed");
       if (event.type !== "request.failed") return;
-      assert.match(event.error.message, scenario === "signal" ? /信号 SIGTERM/ :
-        scenario === "init-exit" ? /退出码 19/ : /退出码 17/);
+      assert.match(event.error.message, scenario === "signal" ? /signal SIGTERM/ :
+        scenario === "init-exit" ? /exit code 19/ : /exit code 17/);
     } finally { await h.c.close(); }
   });
 }
@@ -103,7 +103,7 @@ test("concurrent failures stay request-scoped and reused IDs cannot inherit diag
     for (const [index, event] of results.entries()) {
       assert.equal(event.type, "request.failed");
       if (event.type === "request.failed")
-        assert.match(event.error.message, index === 0 ? /退出码 17/ : /信号 SIGTERM/);
+        assert.match(event.error.message, index === 0 ? /exit code 17/ : /signal SIGTERM/);
     }
     const specific = await h.send(open("first", "a", "error"));
     assert.equal(specific.type, "request.failed");

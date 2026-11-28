@@ -21,7 +21,7 @@ test("status validates ACP handshake, not just executable version", async () => 
 test("status retains safe login diagnostic without printing authorization URL", async () => {
   const result = await provider().status!({ launch: launch("login-required") });
   assert.equal(result.available, false);
-  assert.match(result.diagnostic!, /登录/);
+  assert.match(result.diagnostic!, /sign-in|Sign in/i);
   assert.doesNotMatch(
     result.diagnostic!,
     /accounts\.google|fixture-do-not-show/,

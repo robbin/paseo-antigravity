@@ -35,7 +35,7 @@ export function provider(
     id: "better-paseo-antigravity",
     label: "Better Paseo Antigravity",
     icon: "icon.svg",
-    description: "复用官方 CLI 登录和配置；安全门禁下的静默中断与限次续接。",
+    description: "Reuses official CLI sign-in and configuration; guarded SSE stall cancellation and single continuation.",
     command: ["agy", "acp", "--disable-telemetry"],
     docsUrl: "https://paseo.sh/docs/supported-providers/antigravity",
     installation: {
@@ -63,22 +63,22 @@ export function provider(
     },
     async status({ launch }) {
       if (!launch)
-        return { available: false, diagnostic: "未找到官方 agy CLI。" };
+        return { available: false, diagnostic: "Official agy CLI not found." };
       const ssh = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].find(
         (key) => launch.env[key],
       );
       const signIn = ssh
-        ? `SSH 环境（${ssh}）：CLI 的登录来源可能与本机终端不同。`
-        : "非 SSH 环境：沿用 CLI 原有登录来源。";
+        ? `SSH environment (${ssh}): CLI sign-in source may differ from a local terminal.`
+        : "Non-SSH environment: uses the CLI's existing sign-in source.";
       const deadline =
         Date.now() +
         (testOptions.statusTimeoutMs ?? options.startupTimeoutMs ?? 95000);
       const remaining = () => Math.max(1, deadline - Date.now());
-      let phase = "CLI 版本检查";
+      let phase = "CLI version check";
       let safeFailure: string | undefined;
       try {
         const version = await (testOptions.checkVersion ?? checkCliVersion)(launch, remaining());
-        phase = "ACP 握手";
+        phase = "ACP handshake";
         const probes = new Set<OwnedTransport>();
         try {
           const probe = runAcpProvider({
@@ -113,21 +113,21 @@ export function provider(
         }
         return {
           available: true,
-          diagnostic: `CLI ${version} 与 ACP 握手正常。账号及模型访问仍由创建会话验证。\n${signIn}`,
+          diagnostic: `CLI ${version} and ACP handshake succeeded. Account and model access are still verified when opening a session.\n${signIn}`,
         };
       } catch (error) {
-        if (phase === "CLI 版本检查" && error instanceof Error)
+        if (phase === "CLI version check" && error instanceof Error)
           safeFailure = error.message;
         return {
           available: false,
           // Only our fixed transport diagnostics are safe to show. Never echo raw
           // exec/SDK errors, which can contain command output or an authorization URL.
-          diagnostic: `${safeFailure ?? `${phase}失败或超过启动时限。请检查可执行文件、acp 参数与登录环境。`}\n${signIn}`,
+          diagnostic: `${safeFailure ?? `${phase} failed or exceeded the startup timeout. Check the executable, acp arguments, and sign-in environment.`}\n${signIn}`,
         };
       }
     },
     async connect(request): Promise<ProviderConnection> {
-      if (!request.launch) throw new Error("缺少官方 CLI 启动配置。");
+      if (!request.launch) throw new Error("Missing official CLI launch configuration.");
       const launch = request.launch;
       await (testOptions.checkVersion ?? checkCliVersion)(launch);
       const scope = new AsyncLocalStorage<Context & { request?: RequestState }>();
@@ -173,7 +173,7 @@ export function provider(
         acpOptions: options,
         transformers: [vendor],
         connector: () => {
-          if (closed) throw new Error("Provider 已关闭。");
+          if (closed) throw new Error("Provider is closed.");
           const context = scope.getStore() ?? { cwd: homedir(), env: {} };
           if (context.sessionId) failures.delete(context.sessionId);
           const transport = createTransport(
@@ -285,8 +285,8 @@ export function provider(
                   id: empty ? "antigravity-empty" : "antigravity-tool-only",
                   severity: empty ? "warning" : "info",
                   title: empty
-                    ? "本轮已结束，但没有返回正文或工具结果。请检查官方 CLI 的错误提示；消息没有自动重发。"
-                    : `本轮已结束，${t.failed ? "有前台工具执行失败" : "前台工具已完成"}，但之后没有返回正文；消息没有自动重发。`,
+                    ? "Turn ended without returning text or tool results. Check the official CLI for errors; the message was not resent."
+                    : `Turn ended after foreground tools ${t.failed ? "failed" : "completed"} without returning a follow-up reply; the message was not resent.`,
                 },
               });
             watch.endTurn(e.turnId, e.state === "completed");
@@ -311,11 +311,11 @@ export function provider(
           };
         },
         send(input: ProviderInput, automatic = false) {
-          if (closed) return Promise.reject(new Error("Provider 已关闭。"));
+          if (closed) return Promise.reject(new Error("Provider is closed."));
           const requestId = "requestId" in input && typeof input.requestId === "string"
             ? input.requestId : undefined;
           if (requestId !== undefined && requests.has(requestId))
-            return Promise.reject(new Error("请求标识仍在使用中。"));
+            return Promise.reject(new Error("Request ID is already in use."));
           if (!automatic) recovery.userInput(input);
           const reservation: RequestState = {
             sessionId: "sessionId" in input ? input.sessionId : undefined,

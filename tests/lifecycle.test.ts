@@ -107,7 +107,7 @@ for (const mode of ["parallel", "opening", "interleaved", "final", "duplicate", 
         assert.ok(e.type === "session.notice");
         assert.equal(e.notice.id, "antigravity-tool-only");
         assert.equal(e.notice.severity, "info");
-        assert.equal(e.notice.title.includes("失败"), mode === "failed");
+        assert.equal(e.notice.title.includes("failed"), mode === "failed");
         assert.ok(rows.indexOf(e) < rows.findIndex(e => e.type === "session.turn" && e.state === "completed"));
       }
       const records = log.mock.calls.map(c => c.arguments);
@@ -224,16 +224,16 @@ for (const scenario of ["", "ignore-cancel"]) {
       if (scenario) {
         const e = await h.wait(e => e.type === "session.runtime_failed", from);
         assert.ok(e.type === "session.runtime_failed");
-        assert.match(e.error.message, /取消/);
+        assert.match(e.error.message, /cancel/i);
       } else await h.wait(e => e.type === "session.turn" && e.state === "canceled", from);
     } finally { await h.c.close(); }
   });
 }
 
 for (const [text, reason] of [
-  ["bad", "非 ACP"],
-  ["deferred-bad", "非 ACP"],
-  ["exit-17", "退出码 17"],
+  ["bad", "non-ACP"],
+  ["deferred-bad", "non-ACP"],
+  ["exit-17", "exit code 17"],
   ["signal-term", "SIGTERM"],
 ] as const) {
   test(
@@ -450,7 +450,7 @@ test(
       const e = await h.wait((e) => e.type === "session.runtime_failed", from);
       assert.ok(
         e.type === "session.runtime_failed" &&
-          e.error.message.includes("取消请求"),
+          e.error.message.includes("cancel request"),
       );
     } finally {
       await h.c.close();
@@ -545,7 +545,7 @@ for (const history of ["skip", "replay"] as const)
       await h.c.send({type:"session.interrupt",sessionId:"s",requestId:"stop"});
       const failure = await h.wait(e => e.type === "session.runtime_failed",from);
       assert.ok(failure.type === "session.runtime_failed");
-      assert.match(failure.error.message, /取消/);
+      assert.match(failure.error.message, /cancel/i);
       // SDK settlePendingWork resolves permission promises on transport failure,
       // but 0.17.3 emits no permission_resolved events here. runtime_failed is
       // the host cleanup boundary; UI dismissal needs separate host validation.
@@ -736,7 +736,7 @@ test(
       });
       const e = await h.wait((e) => e.type === "request.failed");
       assert.ok(
-        e.type === "request.failed" && e.error.message.includes("登录"),
+        e.type === "request.failed" && e.error.message.includes("sign-in"),
       );
     } finally {
       await h.c.close();

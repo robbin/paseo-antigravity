@@ -44,7 +44,7 @@ export async function stopGroup(
   }
   // A failed graceful signal must not skip the force-stop attempt.
   if ((await attempt("SIGKILL")) === "denied")
-    return "无法确认 Antigravity 进程组已回收（系统拒绝信号）。请检查本机进程权限。";
+    return "Could not confirm that the Antigravity process group exited (signal denied by OS). Check local process permissions.";
 }
 export function stopProcessGroup(pid: number | undefined, graceMs = 1000) {
   return pid === undefined

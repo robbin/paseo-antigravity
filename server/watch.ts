@@ -41,6 +41,7 @@ interface Tool {
   status: string;
   detached: boolean;
   name?: string;
+  kind?: string;
   turn?: Turn;
 }
 interface Session {
@@ -282,8 +283,9 @@ export class Watch {
       if (!s.replay && typeof tool.toolCallId === "string") {
         const name = typeof tool.name === "string" ? tool.name :
           (typeof tool.title === "string" && ["run_command", "invoke_subagent", "schedule"].includes(tool.title) ? tool.title : undefined);
+        const kind = typeof tool.kind === "string" ? tool.kind : undefined;
         s.background.observe(tool.toolCallId, name, tool,
-          this.turn?.nativeSessionId === sid ? this.turn.turnId : undefined);
+          this.turn?.nativeSessionId === sid ? this.turn.turnId : undefined, kind);
       }
       this.permissions.set(id, sid);
       if (!s.replay && this.turn?.nativeSessionId === sid)
@@ -295,16 +297,19 @@ export class Watch {
     const priorTool = typeof u.toolCallId === "string" ? s.tools.get(u.toolCallId) : undefined;
     const name = typeof u.name === "string" ? u.name : priorTool?.name ??
       (typeof u.title === "string" && ["run_command", "invoke_subagent", "schedule"].includes(u.title) ? u.title : undefined);
+    const kind = typeof u.kind === "string" ? u.kind : priorTool?.kind;
     if (s.replay) {
       if (typeof u.toolCallId === "string") this.retireTool(s, u.toolCallId);
       return;
     }
-    // Live late exit evidence still matters after the launcher row retired.
+    // Live late exit evidence still matters after a background launcher row retired,
+    // but retired non-background tool echoes must never manufacture a new guard.
     // Replay is history, never evidence of a currently running daemon/job.
     if (typeof u.toolCallId === "string" &&
-        (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update")) {
+        (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") &&
+        (!s.retiredTools.has(u.toolCallId) || s.background.has(u.toolCallId))) {
       s.background.observe(u.toolCallId, name, u,
-        this.turn?.nativeSessionId === sid ? this.turn.turnId : undefined);
+        this.turn?.nativeSessionId === sid ? this.turn.turnId : undefined, kind);
     }
     if (typeof u.toolCallId === "string" && s.retiredTools.has(u.toolCallId)) return;
     const turn = this.turn?.nativeSessionId === sid ? this.turn : undefined,
@@ -321,6 +326,7 @@ export class Watch {
         input = record(u.rawInput);
       const tool: Tool = {
         name,
+        kind,
         turn: old ? old.turn : turn, // Carry-over tools retain their original owner.
         status:
           typeof u.status === "string" ? u.status : (old?.status ?? "pending"),
@@ -350,7 +356,7 @@ export class Watch {
         now - call.at >= this.limits.startup
       )
         return {
-          failure: `Antigravity 在 ${call.method} 阶段超时。请检查本机 CLI 和网络后刷新会话。`,
+          failure: `Antigravity timed out during ${call.method}. Check the local CLI and network, then refresh the session.`,
         };
     }
     for (const s of this.sessions.values()) {
@@ -362,7 +368,7 @@ export class Watch {
       )
         return {
           failure:
-            "Antigravity 未及时结束取消请求，已关闭本会话进程；未重发消息。",
+            "Antigravity did not finish the cancel request in time; closed this session process without resending the message.",
         };
     }
     const failure = this.activity.check(now, this.limits.cancel, this.counts());

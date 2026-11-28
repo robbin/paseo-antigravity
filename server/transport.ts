@@ -27,18 +27,18 @@ function parse(line: string): AcpStreamMessage {
     line.startsWith("https://accounts.google.com/")
   )
     throw new Error(
-      "官方 CLI 要求登录。请在该主机终端使用现有 agy 登录；插件不会收集授权码。",
+      "Official CLI requires sign-in. Sign in with agy in a terminal on this host; the plugin does not collect authorization codes.",
     );
   let v: unknown;
   try {
     v = JSON.parse(line);
   } catch {
     throw new Error(
-      "Antigravity stdout 返回了非 ACP 数据。请检查 CLI 版本和登录状态。",
+      "Antigravity stdout returned non-ACP data. Check the CLI version and sign-in state.",
     );
   }
   if (!v || typeof v !== "object" || !("jsonrpc" in v) || v.jsonrpc !== "2.0")
-    throw new Error("无效的 ACP 消息。");
+    throw new Error("Invalid ACP message.");
   if (
     "method" in v &&
     v.method === "session/request_permission" &&
@@ -61,11 +61,11 @@ export function createTransport(
   onStall: (turnId: string) => void = () => {},
 ): OwnedTransport {
   if (process.platform === "win32")
-    throw new Error("当前进程管理实现仅支持 macOS / Linux。");
+    throw new Error("Current process-group management only supports macOS and Linux.");
   for (const [key, value] of Object.entries(limits)) {
     if ((key === "quietDiag" || key === "stall") && value === undefined) continue;
     if (value === undefined || !Number.isFinite(value) || value <= 0)
-      throw new Error("Watch 时间限制必须是正数。");
+      throw new Error("Watch time limits must be positive numbers.");
   }
   const child = spawn(launch.command, launch.args, {
     cwd: context.cwd,
@@ -163,13 +163,13 @@ export function createTransport(
   const consume = () => {
     let pos: number;
     while ((pos = buffer.indexOf("\n")) >= 0) {
-      if (pos > MAX_FRAME) throw new Error("Antigravity 消息超过大小限制。");
+      if (pos > MAX_FRAME) throw new Error("Antigravity message exceeded the maximum frame size.");
       const line = buffer.slice(0, pos).trim();
       buffer = buffer.slice(pos + 1);
       if (line) deliver(parse(line));
     }
     if (buffer.length > MAX_FRAME)
-      throw new Error("Antigravity 消息超过大小限制。");
+      throw new Error("Antigravity message exceeded the maximum frame size.");
   };
   const endOutput = (): Promise<void> =>
     (ending ??= (async () => {
@@ -194,17 +194,17 @@ export function createTransport(
         }
         if (closed) return;
         const detail = exitInfo?.signal
-          ? `（信号 ${exitInfo.signal}）`
+          ? ` (signal ${exitInfo.signal})`
           : typeof exitInfo?.code === "number"
-            ? `（退出码 ${exitInfo.code}）`
+            ? ` (exit code ${exitInfo.code})`
             : "";
         recordFailure(
-          `Antigravity CLI 已关闭输出或退出${detail}。请刷新会话后继续；未重发消息。`,
+          `Antigravity CLI closed output or exited${detail}. Refresh the session to continue; the message was not resent.`,
         );
         // close() preserves queued replies; error() would discard them.
         void close();
       } catch (e) {
-        fail(e instanceof Error ? e.message : "ACP 尾帧错误。");
+        fail(e instanceof Error ? e.message : "ACP trailing frame error.");
       }
     })());
   const drainThenClose = () => {
@@ -292,7 +292,7 @@ export function createTransport(
     }),
     writable: new WritableStream<AcpStreamMessage>({
       write(frame) {
-        if (closed) throw new Error(failure ?? "Antigravity 连接已关闭。");
+        if (closed) throw new Error(failure ?? "Antigravity connection is closed.");
         loadBoundary.outgoing(frame);
         watch.observe("out", frame, Date.now());
         const seq = watch.activity.writeStart("method" in frame ? frame.method : undefined, Date.now());
@@ -303,7 +303,7 @@ export function createTransport(
             settled = true;
             rejectPendingWrite = undefined;
             watch.activity.writeEnd(seq, !error, Date.now());
-            if (error) reject(new Error(failure ?? "Antigravity 连接已关闭。"));
+            if (error) reject(new Error(failure ?? "Antigravity connection is closed."));
             else resolve();
           };
           rejectPendingWrite = () => complete(new Error("closed"));
@@ -311,13 +311,13 @@ export function createTransport(
             child.stdin.write(JSON.stringify(frame) + "\n", error => {
               if (settled) return;
               if (error && !closed) {
-                recordFailure("Antigravity 输入管道已关闭。");
+                recordFailure("Antigravity stdin pipe closed.");
                 drainThenClose();
               }
               complete(error);
             });
           } catch {
-            recordFailure("Antigravity 输入管道写入失败。");
+            recordFailure("Failed to write to Antigravity stdin pipe.");
             drainThenClose();
             complete(new Error("write failed"));
           }
@@ -328,15 +328,15 @@ export function createTransport(
     }),
   };
   child.once("error", () =>
-    fail("无法启动官方 agy，请检查 Paseo 的可执行文件路径。"),
+    fail("Failed to start official agy; check Paseo's executable path."),
   );
   child.stdin.on("error", () => {
     if (!closed) {
-      recordFailure("Antigravity 输入管道已关闭。");
+      recordFailure("Antigravity stdin pipe closed.");
       drainThenClose();
     }
   });
-  child.stdout.on("error", () => fail("Antigravity 输出管道读取失败。"));
+  child.stdout.on("error", () => fail("Failed to read from Antigravity stdout pipe."));
   child.stderr.resume();
   child.stdout.on("data", (chunk: Buffer) => {
     if (closed) return;
@@ -346,7 +346,7 @@ export function createTransport(
       if (controller.desiredSize !== null && controller.desiredSize <= 0)
         child.stdout.pause();
     } catch (e) {
-      fail(e instanceof Error ? e.message : "ACP 协议错误。");
+      fail(e instanceof Error ? e.message : "ACP protocol error.");
     }
   });
   child.stdout.once("end", endOutput);

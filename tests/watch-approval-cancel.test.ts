@@ -21,7 +21,7 @@ test("restored approval without active prompt has a bounded Stop", () => {
   assert.deepEqual(w.check(1000), {});
   stop(w, 1001);
   assert.deepEqual(w.check(1005), {});
-  assert.match(w.check(1006).failure!, /取消/);
+  assert.match(w.check(1006).failure!, /cancel/i);
 });
 
 test("repeated Stop preserves old approval deadline and snapshots new requests", () => {
@@ -30,10 +30,10 @@ test("repeated Stop preserves old approval deadline and snapshots new requests",
   stop(w, 1);
   approval(w, "new", 2);
   stop(w, 4);
-  assert.match(w.check(6).failure!, /取消/);
+  assert.match(w.check(6).failure!, /cancel/i);
   answer(w, "old", 6);
   assert.deepEqual(w.check(8), {});
-  assert.match(w.check(9).failure!, /取消/);
+  assert.match(w.check(9).failure!, /cancel/i);
 });
 
 test("answer clears only its target, later approvals do not inherit Stop", () => {
@@ -44,7 +44,7 @@ test("answer clears only its target, later approvals do not inherit Stop", () =>
   answer(w, "old", 3);
   assert.deepEqual(w.check(1000), {});
   stop(w, 1001);
-  assert.match(w.check(1006).failure!, /取消/);
+  assert.match(w.check(1006).failure!, /cancel/i);
 });
 
 test("prompt completion cannot clear an unanswered approval cancellation", () => {
@@ -53,7 +53,7 @@ test("prompt completion cannot clear an unanswered approval cancellation", () =>
   approval(w, "p", 1);
   stop(w, 2);
   frame(w, "in", { id: 1, result: { stopReason: "end_turn" } }, 3);
-  assert.match(w.check(7).failure!, /取消/);
+  assert.match(w.check(7).failure!, /cancel/i);
   answer(w, "p", 8);
   assert.deepEqual(w.check(1000), {});
 });
@@ -66,7 +66,7 @@ test("approval cancellation is session scoped", () => {
   approval(w, "ours", 1001);
   stop(w, 1002);
   answer(w, "other", 1003);
-  assert.match(w.check(1007).failure!, /取消/);
+  assert.match(w.check(1007).failure!, /cancel/i);
 });
 
 test("resume rebases old approval deadlines but preserves fresh Stop", () => {
@@ -75,12 +75,12 @@ test("resume rebases old approval deadlines but preserves fresh Stop", () => {
   stop(old, 1);
   old.resume(10000, 2);
   assert.deepEqual(old.check(10004), {});
-  assert.match(old.check(10005).failure!, /取消/);
+  assert.match(old.check(10005).failure!, /cancel/i);
   const fresh = make();
   approval(fresh, "p", 0);
   stop(fresh, 9999);
   fresh.resume(10000, 2);
-  assert.match(fresh.check(10004).failure!, /取消/);
+  assert.match(fresh.check(10004).failure!, /cancel/i);
 });
 
 test("clock rollback rebases approval cancellation", () => {
@@ -89,5 +89,5 @@ test("clock rollback rebases approval cancellation", () => {
   stop(w, 10001);
   w.resume(100, 10002);
   assert.deepEqual(w.check(104), {});
-  assert.match(w.check(105).failure!, /取消/);
+  assert.match(w.check(105).failure!, /cancel/i);
 });

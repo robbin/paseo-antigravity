@@ -29,7 +29,7 @@ test("Stop logs preserve original turn and allowlist across turn changes and rej
  w.activity.writeStart("PRIVATE_METHOD",0);
  const first=w.requestStop(1)!,second=w.requestStop(2)!;
  w.endTurn("original");w.startTurn("successor",3);
- w.settleStop(second,true);assert.match(w.check(51).failure!,/停止请求/);w.settleStop(first);
+ w.settleStop(second,true);assert.match(w.check(51).failure!,/stop request/i);w.settleStop(first);
  const rows=log.mock.calls.filter(c=>c.arguments[0]==="[antigravity:stop]").map(c=>JSON.parse(c.arguments[1] as string));
  assert.deepEqual(rows.map(r=>r.phase),["requested","requested","rejected","timeout","settled"]);
  for(const row of rows) {

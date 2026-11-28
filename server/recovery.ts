@@ -19,7 +19,7 @@ interface Ports {
   emit(event: ProviderEvent): void;
 }
 export function continuationPrompt(stallMs: number) {
-  return `[系统自动恢复] 上一轮上游流式响应静默超过 ${stallMs / 1000} 秒，已自动中断卡死连接。请严格基于已有工具输出和当前磁盘状态继续未完成步骤，切勿重复执行已成功完成的写入、命令或外部动作；先核对不确定的副作用，无法确认时询问用户，不要盲目重试；若任务实际已完成，请直接汇报结果。`;
+  return `[System Auto-Recovery] The previous upstream streaming response was silent for over ${stallMs / 1000}s, so the stalled connection was automatically canceled. Strictly continue remaining steps based on existing tool outputs and current disk state—do not repeat completed writes, commands, or external actions. Verify any uncertain side effects first, ask the user if unsure, and do not retry blindly; if the task is already complete, report the result directly. Continue in the same language as the conversation.`;
 }
 
 /** Provider-level coordinator. Never writes ACP frames or fabricates SDK turns.
@@ -68,8 +68,8 @@ export class Recovery {
     this.cancelRequests.set(requestId, {sessionId, chain});
     this.log(sessionId, chain, "cancel-requested");
     this.notice(sessionId, "cancel", chain.used
-      ? "自动续接后上游仍静默超时，正在自动停止；不会再次续接。"
-      : `上游流式响应静默超过 ${this.stallMs / 1000} 秒，已发起自动中断；正常取消收尾后尝试续接（最多 1 次）。`);
+      ? "Upstream stream stalled again after automatic continuation; stopping automatically without another continuation."
+      : `Upstream stream silent for over ${this.stallMs / 1000}s; auto-cancel triggered. Will attempt continuation after clean cancel (max 1).`);
     // Notice listeners can synchronously deliver a user Stop/new message.
     if (!this.live(sessionId, chain)) {
       this.cancelRequests.delete(requestId);
@@ -84,14 +84,14 @@ export class Recovery {
     if (this.chains.get(sessionId) !== chain) return;
     this.log(sessionId, chain, "aborted");
     this.invalidate(sessionId);
-    this.notice(sessionId, "aborted", "自动恢复未满足安全收尾条件，已放弃续接；请核对当前状态后手动继续。");
+    this.notice(sessionId, "aborted", "Auto-recovery did not meet safe shutdown conditions; skipped continuation. Check the current state and continue manually.");
   }
   private schedule(sessionId: string, chain: Chain) {
     if (!chain.canceled || !chain.cancelDelivered || chain.timer || !this.live(sessionId, chain)) return;
     if (chain.used) {
       this.log(sessionId, chain, "exhausted");
       this.invalidate(sessionId);
-      this.notice(sessionId, "stopped", "自动续接后上游仍静默超时，已自动停止，请核对当前状态后手动继续。");
+      this.notice(sessionId, "stopped", "Upstream stream stalled again after automatic continuation; stopped automatically. Check the current state and continue manually.");
       return;
     }
     // A macrotask lets SDK activePrompt.settled/finally clear the old turn. A
@@ -110,7 +110,7 @@ export class Recovery {
       chain.cancelId = undefined;
       chain.cancelDelivered = chain.canceled = false;
       this.log(sessionId, chain, "continuing");
-      this.notice(sessionId, "continuing", `上游流式响应静默超过 ${this.stallMs / 1000} 秒，已自动中断并开始防重续接（最多 1 次）。`, "info");
+      this.notice(sessionId, "continuing", `Upstream stream silent for over ${this.stallMs / 1000}s; auto-canceled and started deduplicated continuation (max 1).`, "info");
       if (!this.live(sessionId, chain)) return;
       const messageId = chain.messageId;
       this.promptRequests.set(messageId, sessionId);

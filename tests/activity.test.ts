@@ -13,9 +13,9 @@ test("Stop token survives turn changes, repeats do not extend first deadline",t=
  const w=make();w.startTurn("one",0);prompt(w);
  const first=w.requestStop(1)!;w.requestStop(20);
  w.endTurn("one");w.startTurn("two",30);
- assert.deepEqual(w.check(50),{});assert.match(w.check(51).failure!,/停止请求/);
+ assert.deepEqual(w.check(50),{});assert.match(w.check(51).failure!,/stop request/i);
  w.settleStop(first);assert.deepEqual(w.check(69),{});
- assert.match(w.check(70).failure!,/停止请求/);
+ assert.match(w.check(70).failure!,/stop request/i);
 });
 test("idle Stop and settled/rejected tokens cannot poison future work",t=>{
  t.mock.method(console,"log",()=>{});
@@ -31,19 +31,19 @@ test("two-phase Stop leaves wire cancellation its original deadline",t=>{
  const token=w.requestStop(1)!;
  frame(w,"out",{method:"session/cancel",params:{sessionId:"s"}},45);
  w.settleStop(token);
- assert.deepEqual(w.check(94),{});assert.match(w.check(95).failure!,/取消请求/);
+ assert.deepEqual(w.check(94),{});assert.match(w.check(95).failure!,/cancel request/i);
 });
 test("restored approval without turn admits a Stop",t=>{
  t.mock.method(console,"log",()=>{});
  const w=make();frame(w,"out",{id:1,method:"session/load",params:{sessionId:"s"}});
  frame(w,"in",{id:2,method:"session/request_permission",params:{sessionId:"s"}});
- assert.notEqual(w.requestStop(1),undefined);assert.match(w.check(51).failure!,/停止请求/);
+ assert.notEqual(w.requestStop(1),undefined);assert.match(w.check(51).failure!,/stop request/i);
 });
 for(const backward of [false,true]) test(`Stop and quiet clocks rebase (backward=${backward})`,t=>{
  const log=t.mock.method(console,"log",()=>{}),w=make();w.startTurn("one",100);prompt(w,1,100);w.requestStop(100);
  const now=backward?0:10000;w.resume(now,100);
  assert.deepEqual(w.check(now+49),{});
- assert.match(w.check(now+50).failure!,/停止请求/);
+ assert.match(w.check(now+50).failure!,/stop request/i);
  assert.ok(!log.mock.calls.some(c=>c.arguments[0]==="[antigravity:quiet]"));
 });
 for(const kind of [undefined,"agent_thought_chunk","tool_call","compaction_update","agent_message_chunk"])

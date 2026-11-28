@@ -37,7 +37,7 @@ test("watch ends replay at load response and tracks autonomous live tools", () =
   w.observe("in",{jsonrpc:"2.0",id:1,result:{}},2);
   w.observe("in",update("live"),3);
   w.observe("out",{jsonrpc:"2.0",method:"session/cancel",params:{sessionId:"s"}},4);
-  assert.match(w.check(25).failure ?? "", /取消/);
+  assert.match(w.check(25).failure ?? "", /cancel/i);
 });
 
 for (const version of ["1.5.14", "unknown"]) {
@@ -50,7 +50,7 @@ for (const version of ["1.5.14", "unknown"]) {
 }
 test("direct connect cannot bypass version check by omitting acp", async () => {
   await assert.rejects(provider().connect({versions:[1],capabilities:[],
-    launch:{command:process.execPath,args:[],env:{}}}), /必须包含 acp/);
+    launch:{command:process.execPath,args:[],env:{}}}), /must include acp/i);
 });
 test("direct connect accepts supported CLI without status probe", async () => {
   const c = await provider().connect({versions:[1],capabilities:[],

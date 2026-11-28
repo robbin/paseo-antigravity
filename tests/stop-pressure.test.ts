@@ -91,7 +91,7 @@ for (const mode of ["blocked", "resume", "deferred"]) {
       } else {
         const failure=await wait(e=>e.type==="session.runtime_failed");
         assert.ok(failure.type==="session.runtime_failed");
-        assert.match(failure.error.message,/停止请求.*传输/);
+        assert.match(failure.error.message,/stop request.*transmitting/i);
         await wait(e=>(e.type==="request.failed"||e.type==="request.completed")&&e.requestId==="stop");
         await wait(e=>(e.type==="request.failed"||e.type==="request.completed")&&e.requestId==="stop-again");
         if (!deferred) {
@@ -142,7 +142,7 @@ test(`turn ending behind approval write (toolOnly=${toolOnly}, rejected=${reject
     return;
   }
   const failure=await wait(e=>e.type==="session.runtime_failed");
-  assert.ok(failure.type==="session.runtime_failed");assert.match(failure.error.message,/停止请求.*传输/);
+  assert.ok(failure.type==="session.runtime_failed");assert.match(failure.error.message,/stop request.*transmitting/i);
   assert.ok(events.indexOf(end)<events.indexOf(failure),"normal turn settlement must precede delivery timeout");
   assert.ok(!events.some(e=>e.type==="session.notice"),"accepted Stop must suppress empty/tool-only notices even before its frame is written");
   const terminal=JSON.parse(log.mock.calls.find(c=>c.arguments[0]==="[antigravity:turn-end]")!.arguments[1] as string);

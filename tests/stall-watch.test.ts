@@ -187,5 +187,30 @@ test("wake preserves fresh post-wake activity window", () => {
 });
 for (const stall of [0, -1, Infinity, NaN]) test(`invalid stall limit rejected before spawn: ${stall}`, () => {
   assert.throws(() => createTransport({command: "/never-spawn", args: [], env: {}},
-    {cwd: process.cwd(), env: {}}, () => {}, {startup: 100, cancel: 50, stall}), /正数/);
+    {cwd: process.cwd(), env: {}}, () => {}, {startup: 100, cancel: 50, stall}), /positive/i);
+});
+for (const nonCommand of [
+  {name: "read_file", kind: "read"},
+  {name: "edit_file", kind: "edit"},
+  {name: "write_file", kind: "edit"},
+  {name: "search_web", kind: "search"},
+  {name: "mcp_paseo_get_agent_activity", kind: "other"},
+  {kind: "read"},
+  {kind: "edit"},
+  {kind: "search"},
+]) test(`non-command tool quoting background prose never blocks recovery: ${JSON.stringify(nonCommand)}`, () => {
+  const {w, tool} = harness();
+  tool({status: "in_progress", ...nonCommand}, 10);
+  // Follow-up update omits name/kind, mimicking partial ACP tool_call_update frames.
+  tool({status: "completed", rawInput: {IsDaemon: true},
+    rawOutput: "Tool is running as a background task; task id: DOCS_EXAMPLE"}, 11);
+  // Retired non-background tool echo omitting name/kind must never manufacture a guard either.
+  tool({status: "completed", rawOutput: "task id: LATE_ECHO"}, 12);
+  assert.deepEqual(w.check(160), {});
+  assert.deepEqual(w.check(161), {stall: "turn"});
+});
+test("unnamed execute tool with background prose still blocks recovery", () => {
+  const {w, tool} = harness();
+  tool({status: "completed", kind: "execute", rawOutput: "Tool is running as a background task; task id: EXEC_JOB"}, 10);
+  assert.deepEqual(w.check(10000), {});
 });

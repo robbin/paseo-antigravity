@@ -44,7 +44,7 @@ async function setup(t: test.TestContext, scenario: string, cancel = 500, histor
 const terminal = (e: ProviderEvent) => e.type === "session.turn" && e.state !== "started";
 const recoveryNotice = (e: ProviderEvent) => e.type === "session.notice" && e.notice.id.startsWith("antigravity-recovery-");
 
-for (const scenario of ["recover", "tool-recover"]) test(`real SDK cancels ${scenario} and continues once with distinct timeline/turn`, {timeout: 10000}, async t => {
+for (const scenario of ["recover", "tool-recover", "read-docs-recover"]) test(`real SDK cancels ${scenario} and continues once with distinct timeline/turn`, {timeout: 10000}, async t => {
   const h = await setup(t, scenario);
   await h.prompt();
   await h.wait(e => e.type === "session.turn" && e.state === "completed");
@@ -177,7 +177,7 @@ test("automatic cancellation timeout uses existing bounded transport/process fal
   await h.prompt();
   const error = await h.wait(e => e.type === "session.runtime_failed");
   assert.ok(error.type === "session.runtime_failed");
-  assert.match(error.error.message, /取消请求/);
+  assert.match(error.error.message, /cancel request/i);
   await h.wait(e => e.type === "session.turn" && e.state === "failed");
   await sleep(200);
   assert.deepEqual((await h.trace()).map(r => r.method), ["session/prompt", "session/cancel"]);
@@ -208,7 +208,7 @@ test("automatic Stop delivery is bounded behind a blocked SDK write queue", {tim
   await h.prompt("large", "x".repeat(4 * 1024 * 1024));
   const error = await h.wait(e => e.type === "session.runtime_failed");
   assert.ok(error.type === "session.runtime_failed");
-  assert.match(error.error.message, /停止请求.*传输/);
+  assert.match(error.error.message, /stop request.*transmitting/i);
   await h.wait(e => e.type === "session.turn" && e.state === "failed");
   await sleep(200);
   assert.equal(h.events.filter(e => e.type === "session.turn" && e.state === "started").length, 1);

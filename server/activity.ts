@@ -71,7 +71,7 @@ export class Activity {
   check(now: number, cancelMs: number, counts: ActivityCounts): string | undefined {
     for (const [token, stop] of this.stops) if (now - stop.at >= cancelMs) {
       this.stopLog("timeout", token);
-      return "Antigravity 停止请求未能及时完成传输，已关闭本会话进程；未重发消息。";
+      return "Antigravity stop request did not finish transmitting in time; closed this session process without resending the message.";
     }
     const l = this.live;
     if (l && !l.reported && now - l.last >= this.quietMs) {

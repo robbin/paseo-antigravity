@@ -59,7 +59,7 @@ test("silent prompt has no automatic inactivity deadline", () => {
   for (const at of [30, 60, 149]) assert.deepEqual(w.check(at), {});
   assert.deepEqual(w.check(90000000), {});
   cancel(w, 90000001);
-  assert.match(w.check(90000006).failure!, /取消/);
+  assert.match(w.check(90000006).failure!, /cancel/i);
 });
 test("normal long tools are never killed for silence", () => {
   const w = new Watch(limits);
@@ -76,7 +76,7 @@ test("new post-response tool stays quiet and remains cancellable", () => {
   update(w, "b", "in_progress", 4);
   assert.deepEqual(w.check(34), {});
   cancel(w, 35);
-  assert.match(w.check(40).failure!, /取消/);
+  assert.match(w.check(40).failure!, /cancel/i);
 });
 test("cancel stays armed until every overlapping prompt settles", () => {
   const w = new Watch(limits);
@@ -84,7 +84,7 @@ test("cancel stays armed until every overlapping prompt settles", () => {
   out(w, 2);
   cancel(w, 10);
   response(w, 2, 11);
-  assert.match(w.check(15).failure!, /取消/);
+  assert.match(w.check(15).failure!, /cancel/i);
 });
 test("confirmed cancellation disarms deadline", () => {
   const w = new Watch(limits);
@@ -108,7 +108,7 @@ test("permission wait pauses silence but never pauses cancellation", () => {
   );
   assert.equal(w.check(1000).failure, undefined);
   cancel(w, 1001);
-  assert.match(w.check(1006).failure!, /取消/);
+  assert.match(w.check(1006).failure!, /cancel/i);
 });
 test("answered permission does not start a silence deadline", () => {
   const w = new Watch(limits);

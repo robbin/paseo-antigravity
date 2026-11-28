@@ -45,7 +45,7 @@ test("spawn failure becomes a stream error and cleanup settles", async () => {
     () => {},
   );
   try {
-    await assert.rejects(t.stream.readable.getReader().read(), /启动/);
+    await assert.rejects(t.stream.readable.getReader().read(), /start official agy/i);
   } finally {
     await t.close();
   }
@@ -80,7 +80,7 @@ test("browser login text becomes actionable error without opening browser", asyn
     `console.log('Open the following link to authenticate the ACP server: fixture');setInterval(()=>{},1000)`,
   );
   try {
-    await assert.rejects(t.stream.readable.getReader().read(), /现有 agy 登录/);
+    await assert.rejects(t.stream.readable.getReader().read(), /Sign in with agy/i);
   } finally {
     await t.close();
   }
