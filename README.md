@@ -10,6 +10,8 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 ### Stability at a Glance
 
+![Guarded SSE stall auto-recovery in Paseo](./assets/sse-stall-recovery.png)
+
 | Failure mode | How Better Paseo Antigravity handles it |
 | --- | --- |
 | Upstream SSE silent stalls vs. legitimate waits | After 150 seconds of eligible silence, requests cancellation and permits at most one anti-duplication continuation. Foreground tools, approvals, replay and observed unfinished background jobs block recovery. Original user prompts are never replayed. |
