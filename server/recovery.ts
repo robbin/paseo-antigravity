@@ -2,9 +2,20 @@ import { randomUUID } from "node:crypto";
 import type { ProviderEvent, ProviderInput } from "@getpaseo/plugin/server/provider";
 import type { OwnedTransport } from "./transport";
 
+export interface RecoveryOptions {
+  maxContinuations?: number;
+  backoffBaseMs?: number;
+}
+export const recoveryDefaults = {
+  maxContinuations: 3,
+  backoffBaseMs: 2_000,
+} as const;
+const MAX_BACKOFF_MS = 60_000;
+
 interface Chain {
   messageId: string;
-  used: boolean;
+  attempts: number;
+  progressSeen: boolean;
   turnId?: string;
   cancelId?: string;
   cancelDelivered?: boolean;
@@ -31,7 +42,22 @@ export class Recovery {
   // Ownership survives user invalidation until the SDK settles the internal input.
   // Match actual submissions, never just a clientMessageId prefix.
   private promptRequests = new Map<string, string>();
-  constructor(private readonly ports: Ports, private readonly stallMs: number) {}
+  private readonly maxContinuations: number;
+  private readonly backoffBaseMs: number;
+  constructor(
+    private readonly ports: Ports,
+    private readonly stallMs: number,
+    options: RecoveryOptions = {},
+  ) {
+    const max = options.maxContinuations ?? recoveryDefaults.maxContinuations;
+    const base = options.backoffBaseMs ?? recoveryDefaults.backoffBaseMs;
+    if (!Number.isInteger(max) || max < 0)
+      throw new Error("Recovery maxContinuations must be a non-negative integer.");
+    if (!Number.isFinite(base) || base < 0)
+      throw new Error("Recovery backoffBaseMs must be a non-negative finite number.");
+    this.maxContinuations = max;
+    this.backoffBaseMs = base;
+  }
 
   invalidate(sessionId: string) {
     const chain = this.chains.get(sessionId);
@@ -43,7 +69,11 @@ export class Recovery {
     if (!("sessionId" in input)) return;
     if (input.type === "session.prompt") {
       this.invalidate(input.sessionId);
-      this.chains.set(input.sessionId, {messageId: input.prompt.clientMessageId, used: false});
+      this.chains.set(input.sessionId, {
+        messageId: input.prompt.clientMessageId,
+        attempts: 0,
+        progressSeen: false,
+      });
     } else if (["session.interrupt", "session.close", "session.open"].includes(input.type)) {
       this.invalidate(input.sessionId);
     }
@@ -51,25 +81,50 @@ export class Recovery {
   private live(sessionId: string, chain: Chain) {
     return this.chains.get(sessionId) === chain && this.ports.transport(sessionId)?.usable === true;
   }
+  private stopReasonFor(chain: Chain): "disabled" | "exhausted" | "no-progress" | undefined {
+    if (this.maxContinuations === 0) return "disabled";
+    if (chain.attempts >= this.maxContinuations) return "exhausted";
+    if (chain.attempts > 0 && !chain.progressSeen) return "no-progress";
+    return undefined;
+  }
+  private backoffMs(nextAttempt: number) {
+    if (this.backoffBaseMs === 0) return 0;
+    return Math.min(MAX_BACKOFF_MS, this.backoffBaseMs * 2 ** (nextAttempt - 1));
+  }
   private notice(sessionId: string, phase: string, title: string, severity: "info" | "warning" = "warning") {
     this.ports.emit({type: "session.notice", sessionId,
       notice: {id: `antigravity-recovery-${phase}`, severity, title}});
   }
   private log(sessionId: string, chain: Chain, phase: string) {
-    console.log("[antigravity:recovery]", JSON.stringify({sessionId, turnId: chain.turnId,
-      phase, continuationUsed: chain.used, stallMs: this.stallMs}));
+    console.log("[antigravity:recovery]", JSON.stringify({
+      sessionId,
+      turnId: chain.turnId,
+      phase,
+      continuationUsed: chain.attempts > 0,
+      attempt: chain.attempts,
+      maxContinuations: this.maxContinuations,
+      stallMs: this.stallMs,
+    }));
   }
   stall(sessionId: string, turnId: string) {
     const chain = this.chains.get(sessionId);
     if (!chain || chain.turnId !== turnId || chain.cancelId ||
         !this.live(sessionId, chain) || this.ports.pending(sessionId)) return;
+    if (chain.attempts > 0 && this.ports.transport(sessionId)?.watch.turnProgress(turnId).progress)
+      chain.progressSeen = true;
     const requestId = `antigravity-recovery:${randomUUID()}`;
     chain.cancelId = requestId;
     this.cancelRequests.set(requestId, {sessionId, chain});
     this.log(sessionId, chain, "cancel-requested");
-    this.notice(sessionId, "cancel", chain.used
-      ? "Upstream stream stalled again after automatic continuation; stopping automatically without another continuation."
-      : `Upstream stream silent for over ${this.stallMs / 1000}s; auto-cancel triggered. Will attempt continuation after clean cancel (max 1).`);
+    const stopReason = this.stopReasonFor(chain);
+    const title = stopReason === "disabled"
+      ? `Upstream stream silent for over ${this.stallMs / 1000}s; auto-cancel triggered (automatic continuation disabled).`
+      : stopReason === "exhausted"
+        ? `Upstream stream stalled again after ${chain.attempts}/${this.maxContinuations} automatic continuations; stopping automatically.`
+        : stopReason === "no-progress"
+          ? `No substantive progress after automatic continuation (${chain.attempts}/${this.maxContinuations}); stopping automatically without another retry.`
+          : `Upstream stream silent for over ${this.stallMs / 1000}s; auto-cancel triggered. Will attempt continuation ${chain.attempts + 1}/${this.maxContinuations} after clean cancel.`;
+    this.notice(sessionId, "cancel", title);
     // Notice listeners can synchronously deliver a user Stop/new message.
     if (!this.live(sessionId, chain)) {
       this.cancelRequests.delete(requestId);
@@ -88,14 +143,21 @@ export class Recovery {
   }
   private schedule(sessionId: string, chain: Chain) {
     if (!chain.canceled || !chain.cancelDelivered || chain.timer || !this.live(sessionId, chain)) return;
-    if (chain.used) {
-      this.log(sessionId, chain, "exhausted");
+    const stopReason = this.stopReasonFor(chain);
+    if (stopReason) {
+      this.log(sessionId, chain, stopReason);
       this.invalidate(sessionId);
-      this.notice(sessionId, "stopped", "Upstream stream stalled again after automatic continuation; stopped automatically. Check the current state and continue manually.");
+      const title = stopReason === "disabled"
+        ? "Upstream stream stalled; stopped automatically (automatic continuation disabled). Check the current state and continue manually."
+        : stopReason === "no-progress"
+          ? `No substantive progress after automatic continuation (${chain.attempts}/${this.maxContinuations}); stopped automatically. Check the current state and continue manually.`
+          : `Upstream stream stalled again after ${chain.attempts}/${this.maxContinuations} automatic continuations; stopped automatically. Check the current state and continue manually.`;
+      this.notice(sessionId, "stopped", title);
       return;
     }
-    // A macrotask lets SDK activePrompt.settled/finally clear the old turn. A
-    // synchronous send in session.turn would interrupt that still-active turn again.
+    const nextAttempt = chain.attempts + 1;
+    // Always defer at least one macrotask so SDK activePrompt.settled/finally
+    // clears the old turn, plus exponential backoff (2s -> 4s -> 8s by default).
     chain.timer = setTimeout(() => {
       chain.timer = undefined;
       const transport = this.ports.transport(sessionId);
@@ -104,14 +166,22 @@ export class Recovery {
         this.abort(sessionId, chain);
         return;
       }
-      chain.used = true; // Consume BEFORE admission; never refund an attempted continuation.
+      chain.attempts = nextAttempt; // Consume BEFORE admission; never refund an attempted continuation.
+      chain.progressSeen = false;
+      chain.outputSeen = false;
       chain.messageId = `antigravity-continuation:${randomUUID()}`;
       chain.turnId = undefined;
       chain.cancelId = undefined;
       chain.cancelDelivered = chain.canceled = false;
       this.log(sessionId, chain, "continuing");
-      this.notice(sessionId, "continuing", `Upstream stream silent for over ${this.stallMs / 1000}s; auto-canceled and started deduplicated continuation (max 1).`, "info");
+      this.notice(sessionId, "continuing", `Upstream stream silent for over ${this.stallMs / 1000}s; auto-canceled and started deduplicated continuation (${chain.attempts}/${this.maxContinuations}).`, "info");
       if (!this.live(sessionId, chain)) return;
+      // Notice listeners can synchronously submit session.configure or other
+      // session work; recheck all gates before admitting an automatic prompt.
+      if (this.ports.pending(sessionId) || !this.ports.transport(sessionId)?.watch.canContinue()) {
+        this.abort(sessionId, chain);
+        return;
+      }
       const messageId = chain.messageId;
       this.promptRequests.set(messageId, sessionId);
       void this.ports.send({type: "session.prompt", sessionId, prompt: {
@@ -121,7 +191,7 @@ export class Recovery {
         this.promptRequests.delete(messageId);
         this.abort(sessionId, chain);
       });
-    }, 0);
+    }, this.backoffMs(nextAttempt));
     chain.timer.unref();
   }
   /** Consume internal request receipts only; SDK turn/timeline events stay public. */
@@ -142,7 +212,7 @@ export class Recovery {
     const sessionId = event.sessionId;
     if (event.type === "session.closed" || event.type === "session.runtime_failed") {
       const chain = this.chains.get(sessionId);
-      if (chain?.cancelId || chain?.used) this.abort(sessionId, chain);
+      if (chain?.cancelId || chain?.attempts) this.abort(sessionId, chain);
       else this.invalidate(sessionId);
       return false;
     }
@@ -156,7 +226,7 @@ export class Recovery {
       else if (event.result.type === "steer") {
         // Deferred SDK turns have a process-retiring interrupt path; stay protected.
         this.invalidate(sessionId);
-      } else if (chain.used) this.abort(sessionId, chain);
+      } else if (chain.attempts > 0) this.abort(sessionId, chain);
       else this.invalidate(sessionId);
     }
     // provider.ts has already called forgetReplacement; binding above must run
@@ -173,18 +243,24 @@ export class Recovery {
             this.schedule(sessionId, chain);
           } else this.abort(sessionId, chain);
         } else {
-          if (chain.used && event.state !== "completed") this.abort(sessionId, chain);
+          if (chain.attempts > 0 && event.state !== "completed") this.abort(sessionId, chain);
           else {
-            if (chain.used) this.log(sessionId, chain, "finished");
+            if (chain.attempts > 0) this.log(sessionId, chain, "finished");
             this.invalidate(sessionId);
           }
         }
       }
     }
-    if (event.type === "timeline.item" && chain?.used && chain.turnId && !chain.cancelId &&
-        !chain.outputSeen && ["assistant_message", "reasoning"].includes(event.item.type)) {
-      chain.outputSeen = true;
-      this.log(sessionId, chain, "output-resumed");
+    if (event.type === "timeline.item" && chain && chain.attempts > 0 && chain.turnId && !chain.cancelId) {
+      // Rely on Watch's wire-level turn ownership so stale/retired tool echoes
+      // forwarded by the SDK cannot fabricate resumed activity or progress.
+      const state = this.ports.transport(sessionId)?.watch.turnProgress(chain.turnId);
+      if (state?.progress) chain.progressSeen = true;
+      if (state?.resumed && !chain.outputSeen) {
+        chain.outputSeen = true;
+        this.log(sessionId, chain, "output-resumed");
+        this.notice(sessionId, "resumed", `Auto-recovery active: model resumed work (${chain.attempts}/${this.maxContinuations}).`, "info");
+      }
     }
     return false;
   }

@@ -1,5 +1,19 @@
 # Better Paseo Antigravity validation
 
+## 0.5.2 candidate: progress-gated 3x recovery, exponential backoff, and resumed-work notice
+
+### Changes
+
+- Upgraded per-user-round continuation allowance from 1 to up to 3 (`recoveryDefaults.maxContinuations = 3`) with exponential backoff (`2s -> 4s -> 8s`, capped at 60s; injectable via `testOptions.recovery` for tests, no new daemon settings).
+- Added a strict zero-progress circuit breaker: follow-up continuations (`2/3`, `3/3`) are allowed only if the preceding continuation observed substantive progress (non-blank `assistant_message` or `completed`/`failed` `tool_call`). Reasoning-only, blank text, canceled tools, or silent retries immediately circuit-break (`no-progress`) and stop cleanly.
+- Added one lightweight `info` `session.notice` (`antigravity-recovery-resumed`) per continuation upon the first resumed `reasoning`, `assistant_message`, or active `tool_call`, solving standard-view opacity during multi-minute resumed tool runs.
+- Extended `[antigravity:recovery]` scalar metadata with `attempt` and `maxContinuations` (no sensitive payloads).
+- Code-review fixes:
+  - P1: `Watch.turnProgress(turnId)` now owns wire-level resumed/progress tracking per turn—keying text/thought ownership by `(sessionUpdate, messageId)` and retaining both message keys and `retiredTools` IDs without eviction for the transport lifetime (no payloads retained)—so stale/retired `tool_call_update` echoes, late chunks reusing a prior turn's `messageId` (even after >2048 distinct IDs), and cross-kind same-ID thought/message chunks are handled accurately (anonymous chunks without `messageId` remain an explicit protocol boundary).
+  - P1: Rechecked `pending()` and `watch.canContinue()` immediately after emitting the `continuing` notice, closing the re-entrant `session.configure` queueing window before automatic prompt admission.
+  - P2: Aligned remaining single-continuation wording across `docs/sse-stall-recovery.md`, `README.md`, and `OVERVIEW.md`.
+- Automated verification: `git diff --check`, `npm run typecheck`, and 361/361 automated tests (0 failures, 0 skipped, 0 canceled; +18 new unit and real-SDK integration cases covering 3x progress-gated continuations, zero-progress immediate circuit breaking, stale prior-turn tool and `messageId` echoes including >2048 IDs and thought/message namespace separation, re-entrant `configure` inside `continuing` notice + Stop, exponential backoff + user Stop during backoff, `maxContinuations=0`, and single resumed-work notice per attempt) pass on the pinned `@getpaseo/plugin` 0.17.3 SDK.
+
 ## 0.5.1 release: English runtime messages and non-command background-guard fix
 
 ### Motivation & changes

@@ -17,7 +17,7 @@ import { vendor, options } from "./vendor";
 import { defaults, turnMetadata, type Limits } from "./watch";
 import { normalizeSessionCwds } from "./session-cwd";
 import { checkCliVersion, cliVersion } from "./cli-version";
-import { Recovery } from "./recovery";
+import { Recovery, type RecoveryOptions } from "./recovery";
 
 // Capture diagnostics per request object so reused IDs cannot inherit old failures.
 interface RequestState { failure?: string; sessionId?: string }
@@ -25,6 +25,7 @@ interface RequestState { failure?: string; sessionId?: string }
 export function provider(
   testOptions: {
     limits?: Limits;
+    recovery?: RecoveryOptions;
     closeTimeoutMs?: number;
     statusTimeoutMs?: number;
     // Explicit dependency injection for mock executables, never a daemon setting.
@@ -35,7 +36,7 @@ export function provider(
     id: "better-paseo-antigravity",
     label: "Better Paseo Antigravity",
     icon: "icon.svg",
-    description: "Reuses official CLI sign-in and configuration; guarded SSE stall cancellation and single continuation.",
+    description: "Reuses official CLI sign-in and configuration; guarded SSE stall cancellation and deduplicated continuation.",
     command: ["agy", "acp", "--disable-telemetry"],
     docsUrl: "https://paseo.sh/docs/supported-providers/antigravity",
     installation: {
@@ -166,7 +167,7 @@ export function provider(
           [...requests.values()].some(r => r.sessionId === sessionId),
         send: input => connection.send(input, true),
         emit,
-      }, testOptions.limits?.stall ?? defaults.stall!);
+      }, testOptions.limits?.stall ?? defaults.stall!, testOptions.recovery);
       const shim = runAcpProvider({
         id: "better-paseo-antigravity",
         label: "Better Paseo Antigravity",

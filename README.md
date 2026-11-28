@@ -14,7 +14,7 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 | Failure mode | How Better Paseo Antigravity handles it |
 | --- | --- |
-| Upstream SSE silent stalls vs. legitimate waits | After 150 seconds of eligible silence, requests cancellation and permits at most one anti-duplication continuation. Foreground tools, approvals, replay and observed unfinished background jobs block recovery. Original user prompts are never replayed. |
+| Upstream SSE silent stalls vs. legitimate waits | After 150 seconds of eligible silence, requests cancellation and permits up to 3 deduplicated continuations with exponential backoff (`2s -> 4s -> 8s`) when substantive progress occurs; zero-progress repeats circuit-break immediately. Foreground tools, approvals, replay and observed unfinished background jobs block recovery. Original user prompts are never replayed. |
 | Hung stop/cancel & orphaned processes | Bounds explicit Stop delivery independently of the write queue, retains a 5-second fallback deadline per canceled target, followed by time-bounded graceful ACP close and detached POSIX process-group cleanup (`SIGTERM` → 1s grace → `SIGKILL`). |
 | Cancel races & stale tool tracking | Ignores idle cancels, isolates `session/load` replay from live tracking, scopes cancel deadlines per target, and retires tools only on explicit tool-terminal events. |
 | Swallowed root-cause errors | Records transport, watchdog, exit-code, and signal failure details before closing the stream so generic SDK errors never hide the real cause. |
@@ -25,8 +25,8 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 - Guarded SSE stall recovery
   - Uses a default 150-second eligible inactivity window, not a total turn-duration limit. Live thought/text chunks restart the window; idle sessions, foreground tools, approvals, replay and observed unfinished background jobs stay protected.
-  - Requests cancellation through the public SDK, retaining the existing 5-second delivery/target fallback. Only a normally canceled original turn on a healthy transport can receive one new, visible anti-duplication continuation prompt; the original user prompt is never resent.
-  - A second stall only cancels and returns control to the user. Stop, new user input and connection failure invalidate pending continuation immediately. Each new user round has its own one-continuation allowance.
+  - Requests cancellation through the public SDK, retaining the existing 5-second delivery/target fallback. Only a normally canceled turn on a healthy transport can receive a new, visible anti-duplication continuation prompt after exponential backoff (`2s -> 4s -> 8s`); the original user prompt is never resent.
+  - Up to 3 continuations per user round are permitted when each continuation makes substantive progress (non-blank assistant text or completed/failed tool calls). Zero-progress stalls circuit-break immediately without retrying. Stop, new user input and connection failure invalidate pending continuation immediately. Each new user round has its own 3-continuation allowance.
 - **Reliable cancellation and process-group cleanup**
   - Enforces a 5-second fallback deadline for canceled prompts, foreground tools and approvals, including restored approvals without an active turn.
   - Performs a time-bounded graceful ACP close (5-second grace) followed by detached POSIX process-group cleanup (`SIGTERM` with 1-second grace, then `SIGKILL`).
@@ -71,8 +71,8 @@ The snapshot reports observed state, not a diagnosis of the model service:
 Recovery has three safety gates:
 
 1. Only a live SDK turn with exactly one unresolved wire prompt, no foreground tools, no approvals, no replay and no Stop intent can accumulate the 150-second window. Known background launches (`run_command` background output / `IsDaemon`, `invoke_subagent`, `schedule`) remain protected independently of their launcher row. A completed launcher is not proof of a completed job. Deferred/steered SDK turns are excluded. Sleep/clock jumps rebase the clocks.
-2. Cancellation uses the public `session.interrupt` API, which sends ACP `session/cancel`. After both cancellation delivery and the original SDK `canceled` turn with native `cancelled` response, one new public `session.prompt` may start. It instructs the agent to use existing tool results and disk state and never repeat successful writes, commands or external actions. A second stall only stops; user Stop/new messages or an unhealthy transport cancel the continuation plan.
-3. A successful recovery emits only two notices: cancellation requested and continuation started. Normal resumed output and completion appear in `[antigravity:recovery]` logs only, while abandoned recovery and second-stall stopping retain abnormal-state notices. Logs contain only allowlisted scalar metadata, never prompt/reasoning/tool contents, task IDs, paths, credentials or raw stderr. This does not sanitize every error originating in the SDK.
+2. Cancellation uses the public `session.interrupt` API, which sends ACP `session/cancel`. After both cancellation delivery and the SDK `canceled` turn with native `cancelled` response, a deduplicated public `session.prompt` may start after exponential backoff (`2s -> 4s -> 8s`, up to 3 continuations per user round). It instructs the agent to use existing tool results and disk state and never repeat successful writes, commands or external actions. A stall with zero substantive progress after a continuation circuit-breaks immediately; exhausting 3/3 stops cleanly; user Stop/new messages or an unhealthy transport cancel the continuation plan immediately.
+3. A successful recovery emits three concise notices: cancellation requested, continuation started, and a lightweight `info` resumed-work confirmation once the model produces its first thought, text, or tool activity. Normal completion writes only `[antigravity:recovery]` logs, while abandoned recovery, zero-progress circuit breaks, and exhausted retries retain abnormal-state notices. Logs contain only allowlisted scalar metadata, never prompt/reasoning/tool contents, task IDs, paths, credentials or raw stderr. This does not sanitize every error originating in the SDK.
 
 The wrapper consumes internal continuation `session.prompt_result` receipts after cleaning the replacement queue and binding the turn. Host-originated receipts and the SDK's visible `session.turn` / `timeline.item` events are preserved.
 
@@ -135,7 +135,7 @@ Google's Antigravity team has clarified that external clients are only supported
 - Commands remain executable; unknown command/skill names are left unclassified when ACP provides no provenance.
 - Does not create a custom OAuth flow, proxy, or credential store; sign in using the official `agy` CLI on the host.
 - Does not read private Antigravity SQLite databases, inboxes, or raw transcripts.
-- Never blindly replays the original user prompt. Only guarded SSE-stall cancellation can produce one distinct anti-duplication continuation; disconnects, user Stop, errors and non-`cancelled` endings cannot.
+- Never blindly replays the original user prompt. Only guarded SSE-stall cancellation can produce a distinct anti-duplication continuation (at most one per stall, up to 3 per user round with zero-progress circuit breaking); disconnects, user Stop, errors and non-`cancelled` endings cannot.
 - Existing notices remain in timeline history. Recovery adds explicit lifecycle notices, not periodic waiting reminders. Its output and terminal events use the SDK's normal timeline/turn machinery; real desktop/mobile UI validation remains pending.
 - See [VALIDATION.md](./VALIDATION.md) for the test matrix and verification notes.
 

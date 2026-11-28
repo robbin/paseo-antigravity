@@ -34,8 +34,28 @@ readline.createInterface({input: process.stdin}).on("line", line => {
     prompts++;
     const input = m.params.prompt[0].text;
     const finish = () => {text("RECOVERED"); reply({stopReason: "end_turn"}); pending = undefined;};
-    if (input === "user-next" || (prompts > 1 && scenario !== "repeat" &&
+    if (input === "user-next" || (prompts > 1 && !["repeat", "progress-recover", "progress-exhaust", "stale-tool-echo", "stale-message-echo"].includes(scenario) &&
         !(scenario.startsWith("scope-") && prompts === 2))) {finish(); return;}
+    if (scenario === "stale-tool-echo") {
+      if (prompts === 1) tool({toolCallId: "old-tool", name: "run_command", rawOutput: {exit_code: 0, output: "DONE"}});
+      else update({sessionUpdate: "tool_call_update", toolCallId: "old-tool", status: "completed", rawOutput: {exit_code: 0, output: "STALE_ECHO"}});
+      return;
+    }
+    if (scenario === "stale-message-echo") {
+      update({sessionUpdate: "agent_message_chunk", messageId: "original-reply", content: {type: "text", text: prompts === 1 ? "partial" : " late-chunk"}});
+      return;
+    }
+    if (scenario === "progress-recover") {
+      if (prompts === 4) {finish(); return;}
+      if (prompts > 1) tool({toolCallId: `step-${prompts}`, name: "run_command", rawOutput: {exit_code: 0, output: "STEP_OK"}});
+      else text("PRIVATE_THOUGHT", true);
+      return;
+    }
+    if (scenario === "progress-exhaust") {
+      if (prompts > 1) tool({toolCallId: `step-${prompts}`, name: "run_command", rawOutput: {exit_code: 0, output: "STEP_OK"}});
+      else text("PRIVATE_THOUGHT", true);
+      return;
+    }
     if (scenario.startsWith("scope-") && prompts === 1) {
       background(scenario.slice(6));
       // agy completes these jobs via an independent callback, not a same-call

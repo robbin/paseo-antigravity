@@ -214,3 +214,28 @@ test("unnamed execute tool with background prose still blocks recovery", () => {
   tool({status: "completed", kind: "execute", rawOutput: "Tool is running as a background task; task id: EXEC_JOB"}, 10);
   assert.deepEqual(w.check(10000), {});
 });
+test("message ownership namespaces text vs thought and retains >2048 prior IDs without eviction", () => {
+  const {w, frame, update, prompt} = harness();
+  for (let i = 0; i < 2050; i++)
+    update({sessionUpdate: "agent_message_chunk", messageId: `m-${i}`, content: {type: "text", text: "old"}}, i + 1);
+  update({sessionUpdate: "agent_thought_chunk", messageId: "shared", content: {type: "text", text: "thought"}}, 2051);
+  frame("in", {id: 1, result: {stopReason: "cancelled"}}, 2052);
+  w.endTurn("turn", false);
+  w.startTurn("c1", 2060); prompt(2060, 2);
+  // Earliest ID beyond 2048 must still be recognized as belonging to the old turn.
+  update({sessionUpdate: "agent_message_chunk", messageId: "m-0", content: {type: "text", text: "late"}}, 2061);
+  assert.deepEqual(w.turnProgress("c1"), {resumed: false, progress: false});
+  // Same messageId in a different chunk namespace (message vs thought) belongs to the new turn.
+  update({sessionUpdate: "agent_message_chunk", messageId: "shared", content: {type: "text", text: "new reply"}}, 2062);
+  assert.deepEqual(w.turnProgress("c1"), {resumed: true, progress: true});
+});
+test("retired tool tracking retains >2048 prior tool IDs without eviction", () => {
+  const {w, frame, tool, prompt} = harness();
+  for (let i = 0; i < 2050; i++)
+    tool({name: "run_command", status: "completed", rawOutput: {exit_code: 0}}, i + 1, `old-tool-${i}`);
+  frame("in", {id: 1, result: {stopReason: "cancelled"}}, 2051);
+  w.endTurn("turn", false);
+  w.startTurn("c1", 2060); prompt(2060, 2);
+  tool({name: "run_command", status: "completed", rawOutput: {exit_code: 0}}, 2061, "old-tool-0");
+  assert.deepEqual(w.turnProgress("c1"), {resumed: false, progress: false});
+});

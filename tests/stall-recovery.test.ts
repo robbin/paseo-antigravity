@@ -9,11 +9,13 @@ import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { provider } from "../server/provider.ts";
 import { continuationPrompt } from "../server/recovery.ts";
 
-async function setup(t: test.TestContext, scenario: string, cancel = 500, history?: "skip" | "replay") {
+async function setup(t: test.TestContext, scenario: string, cancel = 500, history?: "skip" | "replay", backoffBaseMs = 0) {
   const dir = await mkdtemp(join(tmpdir(), "agy-stall-")), traceFile = join(dir, "trace"), pidFile = join(dir, "pid");
   const log = t.mock.method(console, "log", () => {});
   const c = await provider({checkVersion: async () => "1.5.18",
-    limits: {startup: 3000, cancel, stall: 150, quietDiag: 100}, closeTimeoutMs: 100,
+    limits: {startup: 3000, cancel, stall: 150, quietDiag: 100},
+    recovery: {backoffBaseMs},
+    closeTimeoutMs: 100,
   }).connect({versions: [1], capabilities: ["prompt.message", "permission", "session.persistence", "session.configure"],
     launch: {command: process.execPath, args: [fileURLToPath(new URL("./stall-fixture.mjs", import.meta.url))],
       env: {STALL_SCENARIO: scenario, TRACE_FILE: traceFile, PID_FILE: pidFile}}});
@@ -65,7 +67,7 @@ for (const scenario of ["recover", "tool-recover", "read-docs-recover"]) test(`r
   assert.equal(users.length, 2, "continuation is visible, never hidden raw wire injection");
   assert.ok(h.events.some(e => e.type === "timeline.item" && e.item.type === "assistant_message" && e.item.text === "RECOVERED"));
   assert.deepEqual(h.events.filter(recoveryNotice).map(e => e.type === "session.notice" && e.notice.id),
-    ["antigravity-recovery-cancel", "antigravity-recovery-continuing"]);
+    ["antigravity-recovery-cancel", "antigravity-recovery-continuing", "antigravity-recovery-resumed"]);
   assert.ok(!h.events.some(e => e.type === "session.notice" && ["antigravity-empty", "antigravity-tool-only"].includes(e.notice.id)));
   assert.ok(!h.events.some(e => e.type === "request.completed" && e.requestId.startsWith("antigravity-recovery:")));
   const logs = h.log.mock.calls.map(c => c.arguments);
@@ -75,11 +77,11 @@ for (const scenario of ["recover", "tool-recover", "read-docs-recover"]) test(`r
   assert.ok(phases.includes("finished"));
   for (const [, row] of logs.filter(r => r[0] === "[antigravity:recovery]")) {
     const keys = Object.keys(JSON.parse(row as string));
-    assert.ok(keys.every(k => ["sessionId", "turnId", "phase", "continuationUsed", "stallMs"].includes(k)));
+    assert.ok(keys.every(k => ["sessionId", "turnId", "phase", "continuationUsed", "attempt", "maxContinuations", "stallMs"].includes(k)));
   }
 });
 
-test("second silent round stops idle, never loops; a new user round gets a fresh allowance", {timeout: 10000}, async t => {
+test("zero-progress second stall circuit-breaks immediately; a new user round gets a fresh allowance", {timeout: 10000}, async t => {
   const h = await setup(t, "repeat");
   await h.prompt();
   await h.wait(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-stopped");
@@ -90,6 +92,75 @@ test("second silent round stops idle, never loops; a new user round gets a fresh
   await h.prompt("new-user", "PRIVATE_NEW");
   await h.wait(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-stopped", from);
   assert.equal((await h.trace()).filter(r => r.method === "session/prompt").length, 4);
+});
+test("real SDK allows up to 3 continuations across substantive progress and finishes on attempt 3/3", {timeout: 10000}, async t => {
+  const h = await setup(t, "progress-recover");
+  await h.prompt();
+  await h.wait(e => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual((await h.trace()).map(r => r.method), [
+    "session/prompt", "session/cancel",
+    "session/prompt", "session/cancel",
+    "session/prompt", "session/cancel",
+    "session/prompt",
+  ]);
+  assert.equal(h.events.filter(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-resumed").length, 3);
+  assert.ok(h.events.some(e => e.type === "timeline.item" && e.item.type === "assistant_message" && e.item.text === "RECOVERED"));
+});
+test("real SDK exhausts cleanly after 3/3 continuations even with progress", {timeout: 10000}, async t => {
+  const h = await setup(t, "progress-exhaust");
+  await h.prompt();
+  await h.wait(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-stopped");
+  await sleep(400);
+  assert.equal((await h.trace()).filter(r => r.method === "session/prompt").length, 4);
+  assert.equal((await h.trace()).filter(r => r.method === "session/cancel").length, 4);
+});
+test("real SDK stale tool echo from prior turn never bypasses zero-progress circuit break", {timeout: 10000}, async t => {
+  const h = await setup(t, "stale-tool-echo");
+  await h.prompt();
+  await h.wait(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-stopped");
+  await sleep(400);
+  assert.deepEqual((await h.trace()).map(r => r.method), ["session/prompt", "session/cancel", "session/prompt", "session/cancel"]);
+  assert.equal(h.events.filter(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-resumed").length, 0);
+  const stopped = h.events.find(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-stopped");
+  assert.ok(stopped?.type === "session.notice" && /No substantive progress/i.test(stopped.notice.title));
+});
+test("real SDK stale messageId chunk from prior turn never bypasses zero-progress circuit break", {timeout: 10000}, async t => {
+  const h = await setup(t, "stale-message-echo");
+  await h.prompt();
+  await h.wait(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-stopped");
+  await sleep(400);
+  assert.deepEqual((await h.trace()).map(r => r.method), ["session/prompt", "session/cancel", "session/prompt", "session/cancel"]);
+  assert.equal(h.events.filter(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-resumed").length, 0);
+  const stopped = h.events.find(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-stopped");
+  assert.ok(stopped?.type === "session.notice" && /No substantive progress/i.test(stopped.notice.title));
+});
+test("synchronous configure inside continuing notice aborts continuation even before later Stop", {timeout: 10000}, async t => {
+  const h = await setup(t, "slow-config");
+  let configure: Promise<void> | undefined;
+  let stop: Promise<void> | undefined;
+  h.c.onEvent(e => {
+    if (e.type === "session.notice" && e.notice.id === "antigravity-recovery-continuing") {
+      configure = h.c.send({type: "session.configure", sessionId: "s", requestId: "configure", changes: {mode: "other"}});
+      setTimeout(() => { stop = h.c.send({type: "session.interrupt", sessionId: "s", requestId: "user-stop"}); }, 30);
+    }
+  });
+  await h.prompt();
+  await h.wait(e => e.type === "session.notice" && e.notice.id === "antigravity-recovery-aborted");
+  await configure;
+  await h.wait(e => e.type === "request.completed" && e.requestId === "configure");
+  await stop;
+  await sleep(450);
+  assert.equal((await h.trace()).filter(r => r.method === "session/prompt").length, 1);
+});
+test("real SDK respects backoff delay and user Stop during backoff cancels continuation", {timeout: 10000}, async t => {
+  const h = await setup(t, "recover", 500, undefined, 120);
+  await h.prompt();
+  await h.wait(e => e.type === "session.turn" && e.state === "canceled");
+  await sleep(30);
+  assert.equal((await h.trace()).filter(r => r.method === "session/prompt").length, 1, "still waiting in backoff");
+  await h.c.send({type: "session.interrupt", sessionId: "s", requestId: "user-stop"});
+  await sleep(250);
+  assert.equal((await h.trace()).filter(r => r.method === "session/prompt").length, 1);
 });
 for (const scenario of ["foreground", "approval", "background", "daemon", "subagent", "schedule", "stream", "short"])
   test(`real SDK legitimate wait/output is never interrupted: ${scenario}`, {timeout: 10000}, async t => {

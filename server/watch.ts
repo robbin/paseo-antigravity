@@ -27,6 +27,7 @@ interface Turn {
   replaced: boolean;
   text: boolean;
   trailingText: boolean;
+  resumed: boolean;
   results: number;
   completed: number;
   failed: number;
@@ -53,6 +54,7 @@ interface Session {
   cancelApprovals: Map<Id, number>;
   replay: boolean;
   retiredTools: Set<string>;
+  messages: Map<string, Turn | "retired">;
   background: BackgroundTasks;
 }
 export type WatchResult = { failure?: string; stall?: string };
@@ -99,6 +101,12 @@ export class Watch {
     const c = this.counts();
     return !this.turn && this.safeWorkState() &&
       c.openPrompts === 0 && c.openTools === 0 && c.approvals === 0;
+  }
+  /** Authoritative per-turn wire progress; ignores replay, retired echoes, and prior-turn tools. */
+  turnProgress(turnId: string): { resumed: boolean; progress: boolean } {
+    const t = this.turn;
+    if (!t || t.turnId !== turnId) return { resumed: false, progress: false };
+    return { resumed: t.resumed, progress: t.text || t.results > 0 };
   }
   private recoveryEligible() {
     const t = this.turn;
@@ -154,7 +162,7 @@ export class Watch {
     this.quietSince = undefined;
     this.stallReported = false;
     this.turn = { turnId, startedAt: now, canceled: false, stopTokens: new Set(), replaced: false,
-      text: false, trailingText: false, results: 0, completed: 0, failed: 0 };
+      text: false, trailingText: false, resumed: false, results: 0, completed: 0, failed: 0 };
   }
   private session(id: string): Session {
     let s = this.sessions.get(id);
@@ -168,18 +176,24 @@ export class Watch {
         cancelApprovals: new Map(),
         replay: false,
         retiredTools: new Set(),
+        messages: new Map(),
         background: new BackgroundTasks(),
       };
       this.sessions.set(id, s);
     }
     return s;
   }
+  private rememberMessage(s: Session, key: string, owner: Turn | "retired") {
+    // Retain distinct message keys for the transport lifetime (like SDK message
+    // tracking) without storing payloads; evicting would misclassify old echoes.
+    if (!s.messages.has(key)) s.messages.set(key, owner);
+  }
   private retireTool(s: Session, id: string) {
     s.tools.delete(id);
     s.cancelTools.delete(id);
+    // Retain distinct retired tool IDs for the transport lifetime (without
+    // payloads) so late echoes never re-enter live turn or progress tracking.
     s.retiredTools.add(id);
-    while (s.retiredTools.size > 2048)
-      s.retiredTools.delete(s.retiredTools.values().next().value!);
   }
   /** A completed turn can preserve background tools. Only actual tool terminal events retire them. */
   finishTool(id: string, now = Date.now()) {
@@ -298,8 +312,13 @@ export class Watch {
     const name = typeof u.name === "string" ? u.name : priorTool?.name ??
       (typeof u.title === "string" && ["run_command", "invoke_subagent", "schedule"].includes(u.title) ? u.title : undefined);
     const kind = typeof u.kind === "string" ? u.kind : priorTool?.kind;
+    const isTextOrThought =
+      u.sessionUpdate === "agent_message_chunk" || u.sessionUpdate === "agent_thought_chunk";
+    const messageKey = isTextOrThought && typeof u.messageId === "string" && u.messageId
+      ? `${u.sessionUpdate}\0${u.messageId}` : undefined;
     if (s.replay) {
       if (typeof u.toolCallId === "string") this.retireTool(s, u.toolCallId);
+      if (messageKey) this.rememberMessage(s, messageKey, "retired");
       return;
     }
     // Live late exit evidence still matters after a background launcher row retired,
@@ -314,13 +333,18 @@ export class Watch {
     if (typeof u.toolCallId === "string" && s.retiredTools.has(u.toolCallId)) return;
     const turn = this.turn?.nativeSessionId === sid ? this.turn : undefined,
       content = record(u.content);
-    // Carry-over tools retain their owner. Their completion (and retired echoes)
-    // must not look like progress by a newer, otherwise silent prompt.
-    if (turn && (!priorTool || priorTool.turn === turn))
+    if (messageKey) this.rememberMessage(s, messageKey, turn ?? "retired");
+    const messageOwned = !messageKey || s.messages.get(messageKey) === turn;
+    // Carry-over tools and prior-turn message chunks retain their owner. Their
+    // late updates must not look like progress by a newer, otherwise silent prompt.
+    if (turn && (!priorTool || priorTool.turn === turn) && messageOwned)
       this.activity.incoming(u.sessionUpdate, now);
-    if (turn && u.sessionUpdate === "agent_message_chunk" &&
+    if (turn && messageOwned && u.sessionUpdate === "agent_message_chunk" &&
         content.type === "text" && typeof content.text === "string" && content.text.trim())
-      turn.text = turn.trailingText = true;
+      turn.text = turn.trailingText = turn.resumed = true;
+    if (turn && messageOwned && u.sessionUpdate === "agent_thought_chunk" &&
+        content.type === "text" && typeof content.text === "string" && content.text.trim())
+      turn.resumed = true;
     if (typeof u.toolCallId === "string") {
       const old = s.tools.get(u.toolCallId),
         input = record(u.rawInput);
@@ -336,6 +360,8 @@ export class Watch {
           (name === "schedule" && typeof input.CronExpression === "string" &&
             input.CronExpression.trim().length > 0),
       };
+      if (turn && tool.turn === turn && tool.status !== "canceled")
+        turn.resumed = true;
       if (["completed", "failed", "cancelled"].includes(tool.status)) {
         if (turn && tool.turn === turn && (u.status === "completed" || u.status === "failed")) {
           turn.results++;
