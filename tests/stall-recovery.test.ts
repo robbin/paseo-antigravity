@@ -9,12 +9,19 @@ import type { ProviderEvent } from "@getpaseo/plugin/server/provider";
 import { provider } from "../server/provider.ts";
 import { continuationPrompt } from "../server/recovery.ts";
 
-async function setup(t: test.TestContext, scenario: string, cancel = 500, history?: "skip" | "replay", backoffBaseMs = 0) {
+async function setup(
+  t: test.TestContext,
+  scenario: string,
+  cancel = 500,
+  history?: "skip" | "replay",
+  backoffBaseMs = 0,
+  enabled = true,
+) {
   const dir = await mkdtemp(join(tmpdir(), "agy-stall-")), traceFile = join(dir, "trace"), pidFile = join(dir, "pid");
   const log = t.mock.method(console, "log", () => {});
   const c = await provider({checkVersion: async () => "1.5.18",
     limits: {startup: 3000, cancel, stall: 150, quietDiag: 100},
-    recovery: {backoffBaseMs},
+    recovery: {enabled, backoffBaseMs},
     closeTimeoutMs: 100,
   }).connect({versions: [1], capabilities: ["prompt.message", "permission", "session.persistence", "session.configure"],
     launch: {command: process.execPath, args: [fileURLToPath(new URL("./stall-fixture.mjs", import.meta.url))],
@@ -294,4 +301,17 @@ test("Stop before threshold suppresses all recovery", {timeout: 10000}, async t 
   await sleep(400);
   assert.ok(!h.events.some(recoveryNotice));
   assert.equal((await h.trace()).filter(r => r.method === "session/prompt").length, 1);
+});
+test("transient pending session.configure at stall threshold does not permanently latch stallReported", {timeout: 10000}, async t => {
+  const h = await setup(t, "slow-config");
+  await h.prompt();
+  await h.wait(e => e.type === "timeline.item" && e.item.type === "reasoning");
+  // slow-config replies to session/set_mode after 350ms, spanning the 150ms stall threshold.
+  const configure = h.c.send({type: "session.configure", sessionId: "s", requestId: "cfg-during-stall", changes: {mode: "other"}});
+  await h.wait(e => e.type === "request.completed" && e.requestId === "cfg-during-stall");
+  await configure;
+  // Once configure finishes, the still-stalled turn must recover instead of staying latched forever.
+  await h.wait(e => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual((await h.trace()).map(r => r.method), ["session/prompt", "session/cancel", "session/prompt"]);
+  assert.ok(h.events.some(e => e.type === "timeline.item" && e.item.type === "assistant_message" && e.item.text === "RECOVERED"));
 });

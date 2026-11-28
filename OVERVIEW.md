@@ -8,7 +8,7 @@ Both providers run the official `agy acp` CLI on top of Paseo's ACP SDK and shar
 
 | Built-in Antigravity ACP provider issue | Better Paseo Antigravity enhancement |
 | --- | --- |
-| Upstream SSE silence while TCP remains connected | After 150 seconds of eligible silence, requests cancellation and allows up to 3 deduplicated continuations with exponential backoff (`2s -> 4s -> 8s`) when substantive progress occurs. Zero-progress stalls circuit-break immediately; foreground tools, approvals, replay and observed unfinished background jobs block recovery. |
+| Upstream SSE silence while TCP remains connected | Optional SSE stall auto-recovery (off by default to protect long thinking such as Extra High mode). Enable it in Settings → Plugins → Better Paseo Antigravity with configurable silence timeout (`10–3600s`, default `300s`) and maximum retries (`0–10`, default `3`) using exponential backoff (`2s -> 4s -> 8s`) when substantive progress occurs. Zero-progress stalls circuit-break immediately; foreground tools, approvals, replay and observed unfinished background jobs block recovery. |
 | Hung stop/cancel requests and orphaned processes | Bounds explicit Stop delivery independently of a blocked write queue, targets only the in-flight requests, foreground tools, and approvals active at cancel time (including restored approvals without an active turn) with a 5-second fallback deadline, and runs a time-bounded graceful ACP close followed by detached POSIX process-group cleanup. Later requests never inherit an old cancel deadline. |
 | Swallowed root-cause errors on disconnect | Captures the underlying transport, watchdog, exit-code, or signal diagnostics before closing the stream so generic SDK errors do not hide the real cause. |
 | Truncated or stalled large history replays | Follows the native `session/load` boundary in `agy >= 1.5.15`, preserving wire order, fragmented UTF-8 decoding, and backpressure without waiting for stream silence. Live updates appear immediately after restore without requiring a new prompt. |
@@ -22,7 +22,24 @@ Select Better Paseo Antigravity when creating a new agent. Existing sessions cre
 
 ### Why SSE recovery is needed
 
-Field investigations using `acp-server-*.log`, `daemon.log` and Mihomo's live connection table found that Google's `daily-cloudcode-pa.googleapis.com` `streamGenerateContent?alt=sse` can stop sending SSE after partial reasoning without `END_STREAM`, while TCP remains `ESTABLISHED`. The closed-source `agy` client lacks an SSE inter-chunk idle-read timeout, so `session/prompt` hangs and Paseo remains `running`. This upstream combination—not a defect originating in this plugin—motivates the default 150-second outer safety net. The plugin never calls that endpoint directly.
+Field investigations using `acp-server-*.log`, `daemon.log` and Mihomo's live connection table found that Google's `daily-cloudcode-pa.googleapis.com` `streamGenerateContent?alt=sse` can stop sending SSE after partial reasoning without `END_STREAM`, while TCP remains `ESTABLISHED`. The closed-source `agy` client lacks an SSE inter-chunk idle-read timeout, so `session/prompt` hangs and Paseo remains `running`. This upstream combination—not a defect originating in this plugin—motivates the optional outer safety net (disabled by default; default 300-second threshold and 3 retries when enabled in plugin settings). The plugin never calls that endpoint directly.
+
+### Plugin settings: SSE stall auto-recovery
+
+Open Settings → Plugins → Better Paseo Antigravity to configure optional upstream SSE stall auto-recovery. Settings are stored per daemon host (`stall-recovery`) and apply immediately to active and new sessions without reloading the plugin.
+
+| Setting | Default | Range | Behavior |
+| --- | --- | --- | --- |
+| Enable SSE stall auto-recovery | Off (`false`) | On / Off | Disabled by default so long silent thinking turns (such as High or Extra High mode) are never prematurely canceled. Toggling saves immediately. |
+| Silence detection timeout (seconds) | `300` | `10–3600` | Shown when recovery is enabled. Counts only eligible silence with no foreground tools, pending approvals, replay, or observed unfinished background jobs. Increase further (for example `450–600`) if Extra High thinking turns stay quiet longer. |
+| Maximum continuation retries | `3` | `0–10` | Shown when recovery is enabled. Maximum deduplicated continuations per user round when substantive progress is made, using exponential backoff (`2s -> 4s -> 8s`). Zero-progress stalls circuit-break immediately. Set to `0` to auto-cancel without sending a continuation prompt. |
+
+Live-update semantics:
+
+- Enabling recovery mid-turn starts a fresh silence window from the moment it is turned on, rather than counting prior silence retroactively.
+- Turning recovery off immediately clears the silence clock and irreversibly invalidates any in-flight cancel or pending backoff continuation; re-enabling cannot resurrect an older continuation plan.
+- Lowering the silence timeout keeps the currently accumulated silence window and triggers on the next poll if elapsed silence already meets the new threshold.
+- Parameter changes are edited as a draft with explicit Save changes and Reset defaults (`300s / 3`) actions and revision-conflict protection across clients. If the stored settings file is ever invalid, it is preserved without silent overwrite and can be recovered via Reset to defaults.
 
 ### Three recovery gates
 
@@ -39,6 +56,7 @@ A completed launcher is not a completed background job. Ordinary non-daemon back
 - **OS**: macOS or Linux (Windows is unsupported due to POSIX process-group signaling).
 - **Paseo**: `>=0.17.3`.
 - **Antigravity CLI**: Official `agy` `>=1.5.15` installed and signed in on the daemon host (`1.5.16` recommended for its upstream subagent approval/question forwarding fix).
+- **Plugin settings (optional)**: Stored per daemon host under Settings → Plugins → Better Paseo Antigravity (`stall-recovery`). SSE stall auto-recovery defaults to off (`enabled: false`); when turned on, you can configure silence detection timeout (`10–3600s`, default `300s`) and maximum continuation retries (`0–10`, default `3`, where `0` cancels without continuing). Changes apply live without reloading the plugin.
 
 Provider status checks verify the `agy` CLI version and perform an ACP handshake within a shared ~95-second cold-start budget. Recognized sign-in failures are reported without printing authorization URLs. Account eligibility and model access are still verified when opening a session.
 

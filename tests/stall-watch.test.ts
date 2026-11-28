@@ -18,13 +18,18 @@ function harness(stall = 150) {
   return {w, frame, prompt, update, tool};
 }
 
-test("default is exactly 150 seconds; diagnostic threshold remains independent", () => {
-  assert.equal(defaults.stall, 150_000);
+test("default is exactly 300 seconds; diagnostic threshold remains independent", () => {
+  assert.equal(defaults.stall, 300_000);
   assert.equal(defaults.cancel, 5_000);
   const {w} = harness(defaults.stall);
-  assert.deepEqual(w.check(149_999), {});
-  assert.deepEqual(w.check(150_000), {stall: "turn"});
-  assert.deepEqual(w.check(300_000), {}, "one trigger per SDK turn");
+  assert.deepEqual(w.check(299_999), {});
+  assert.deepEqual(w.check(300_000), {stall: "turn"});
+  assert.deepEqual(w.check(600_000), {}, "one trigger per SDK turn");
+  // Mismatched turnId cannot clear the latch; matching turnId allows re-checking.
+  w.clearStallReported("other-turn");
+  assert.deepEqual(w.check(600_001), {});
+  w.clearStallReported("turn");
+  assert.deepEqual(w.check(600_002), {stall: "turn"});
 });
 for (const kind of ["agent_thought_chunk", "agent_message_chunk"]) {
   test(`continuous ${kind} resets inactivity, not total elapsed time`, () => {

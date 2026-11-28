@@ -8,10 +8,14 @@ export interface Limits {
   quietDiag?: number;
   stall?: number;
 }
+export interface StallWatchConfig {
+  enabled: boolean;
+  stallMs: number;
+}
 export const defaults: Limits = {
   startup: 90_000,
   cancel: 5_000,
-  stall: 150_000,
+  stall: 300_000,
 };
 type Id = string | number;
 // Scalar metadata only; completed/failed count foreground tools, results includes detached tools.
@@ -74,8 +78,17 @@ export class Watch {
   private quietSince?: number;
   private stallReported = false;
   readonly activity: Activity;
-  constructor(readonly limits: Limits = defaults) {
+  constructor(
+    readonly limits: Limits = defaults,
+    private readonly stallConfig?: () => StallWatchConfig,
+  ) {
     this.activity = new Activity(limits.quietDiag);
+  }
+  private stallEnabled(): boolean {
+    return this.stallConfig ? this.stallConfig().enabled : true;
+  }
+  private stallThresholdMs(): number {
+    return this.stallConfig ? this.stallConfig().stallMs : (this.limits.stall ?? defaults.stall!);
   }
   private counts() {
     let openPrompts = 0, openTools = 0, approvals = 0;
@@ -109,6 +122,7 @@ export class Watch {
     return { resumed: t.resumed, progress: t.text || t.results > 0 };
   }
   private recoveryEligible() {
+    if (!this.stallEnabled()) return false;
     const t = this.turn;
     // Any response in this SDK turn may mean deferred/steered work. Its interrupt
     // retires the runtime rather than just ending a wire prompt; never recover it.
@@ -120,6 +134,14 @@ export class Watch {
   private reconcileRecovery(now: number) {
     if (!this.recoveryEligible()) this.quietSince = undefined;
     else this.quietSince ??= now;
+  }
+  /** Re-evaluate recovery eligibility immediately after a runtime config change. */
+  syncRecovery(now = Date.now()) {
+    this.reconcileRecovery(now);
+  }
+  /** Allow re-checking stall on this turn when Recovery defers for a transient pending control request. */
+  clearStallReported(turnId: string) {
+    if (this.turn?.turnId === turnId) this.stallReported = false;
   }
   requestStop(now = Date.now()): number | undefined {
     const c = this.counts();
@@ -401,8 +423,9 @@ export class Watch {
     if (failure) return {failure};
     this.reconcileRecovery(now);
     const since = this.quietSince;
-    if (since !== undefined && !this.stallReported &&
-        now - Math.max(since, this.activity.lastActivityAt ?? since) >= (this.limits.stall ?? defaults.stall!)) {
+    const stallMs = this.stallThresholdMs();
+    if (since !== undefined && !this.stallReported && Number.isFinite(stallMs) && stallMs > 0 &&
+        now - Math.max(since, this.activity.lastActivityAt ?? since) >= stallMs) {
       this.stallReported = true;
       return {stall: this.turn!.turnId};
     }

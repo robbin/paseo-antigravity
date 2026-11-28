@@ -10,11 +10,17 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 ### Stability at a Glance
 
+![Better Paseo Antigravity plugin settings screen](./assets/settings-screen.png)
+
+*Optional SSE stall auto-recovery settings under Settings → Plugins → Better Paseo Antigravity (off by default; configurable timeout and retry limit when enabled).*
+
 ![Guarded SSE stall auto-recovery in Paseo](./assets/sse-stall-recovery.png)
+
+*Live timeline view when guarded SSE stall recovery cancels a stalled upstream stream and resumes cleanly.*
 
 | Failure mode | How Better Paseo Antigravity handles it |
 | --- | --- |
-| Upstream SSE silent stalls vs. legitimate waits | After 150 seconds of eligible silence, requests cancellation and permits up to 3 deduplicated continuations with exponential backoff (`2s -> 4s -> 8s`) when substantive progress occurs; zero-progress repeats circuit-break immediately. Foreground tools, approvals, replay and observed unfinished background jobs block recovery. Original user prompts are never replayed. |
+| Upstream SSE silent stalls vs. legitimate waits | Optional SSE stall auto-recovery (**off by default** to avoid interrupting long thinking such as Extra High mode). Enable it in **Settings → Plugins → Better Paseo Antigravity** and configure silence timeout (`10–3600s`, default `300s`) and max retries (`0–10`, default `3`) with exponential backoff (`2s -> 4s -> 8s`). Zero-progress repeats circuit-break immediately; foreground tools, approvals, replay and observed unfinished background jobs block recovery. Original user prompts are never replayed. |
 | Hung stop/cancel & orphaned processes | Bounds explicit Stop delivery independently of the write queue, retains a 5-second fallback deadline per canceled target, followed by time-bounded graceful ACP close and detached POSIX process-group cleanup (`SIGTERM` → 1s grace → `SIGKILL`). |
 | Cancel races & stale tool tracking | Ignores idle cancels, isolates `session/load` replay from live tracking, scopes cancel deadlines per target, and retires tools only on explicit tool-terminal events. |
 | Swallowed root-cause errors | Records transport, watchdog, exit-code, and signal failure details before closing the stream so generic SDK errors never hide the real cause. |
@@ -23,10 +29,11 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 ### Engineering Details
 
-- Guarded SSE stall recovery
-  - Uses a default 150-second eligible inactivity window, not a total turn-duration limit. Live thought/text chunks restart the window; idle sessions, foreground tools, approvals, replay and observed unfinished background jobs stay protected.
+- Guarded SSE stall recovery (opt-in)
+  - **Off by default** so long silent thinking turns (such as Extra High mode) are never prematurely canceled unless you opt in via **Settings → Plugins → Better Paseo Antigravity**.
+  - When enabled, uses a configurable eligible inactivity window (`10–3600s`, default `300s`), not a total turn-duration limit. Live thought/text chunks restart the window; idle sessions, foreground tools, approvals, replay and observed unfinished background jobs stay protected.
   - Requests cancellation through the public SDK, retaining the existing 5-second delivery/target fallback. Only a normally canceled turn on a healthy transport can receive a new, visible anti-duplication continuation prompt after exponential backoff (`2s -> 4s -> 8s`); the original user prompt is never resent.
-  - Up to 3 continuations per user round are permitted when each continuation makes substantive progress (non-blank assistant text or completed/failed tool calls). Zero-progress stalls circuit-break immediately without retrying. Stop, new user input and connection failure invalidate pending continuation immediately. Each new user round has its own 3-continuation allowance.
+  - Permits up to the configured maximum continuations per user round (`0–10`, default `3`; `0` auto-cancels without continuing) when each continuation makes substantive progress (non-blank assistant text or completed/failed tool calls). Zero-progress stalls circuit-break immediately without retrying. Stop, new user input, turning the setting off (which irreversibly invalidates in-flight or pending continuations), and connection failure invalidate pending continuation immediately. Settings are host-scoped and apply live without reloading the plugin (enabling mid-turn starts a fresh silence window; lowering the threshold keeps currently accumulated silence and may trigger on the next poll).
 - **Reliable cancellation and process-group cleanup**
   - Enforces a 5-second fallback deadline for canceled prompts, foreground tools and approvals, including restored approvals without an active turn.
   - Performs a time-bounded graceful ACP close (5-second grace) followed by detached POSIX process-group cleanup (`SIGTERM` with 1-second grace, then `SIGKILL`).
@@ -57,7 +64,7 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 Field investigations using `acp-server-*.log`, `daemon.log` and Mihomo's live connection table identified an upstream defect: the TCP connection remains `ESTABLISHED`, but Google's `daily-cloudcode-pa.googleapis.com` `streamGenerateContent?alt=sse` can emit some reasoning and then stop sending SSE data without `END_STREAM`. The closed-source `agy` client lacks an SSE inter-chunk idle-read timeout, leaving `session/prompt` pending and Paseo showing `running`. This is the combination of Google server-side SSE silence and the missing `agy` timeout, not a bug originating in this plugin. The plugin adds an outer recovery safety net, not a repair of Google's service or a private endpoint integration.
 
-Long thinking alone is not evidence of deadlock. The existing approximately 120-second `[antigravity:quiet]` snapshot remains diagnostic-only and independent of recovery. At 150 seconds of eligible silence, the separate recovery policy requests cancellation and reports its progress through `session.notice`. Inspect plugin logs in Paseo Settings → Plugins → Logs.
+Long thinking alone is not evidence of deadlock. The existing approximately 120-second `[antigravity:quiet]` snapshot remains diagnostic-only and independent of recovery. SSE stall auto-recovery is **disabled by default**; when enabled in **Settings → Plugins → Better Paseo Antigravity**, the separate recovery policy requests cancellation after the configured silence timeout (default 300 seconds) and reports its progress through `session.notice`. Inspect plugin logs in Paseo Settings → Plugins → Logs.
 
 The snapshot reports observed state, not a diagnosis of the model service:
 
@@ -70,7 +77,7 @@ The snapshot reports observed state, not a diagnosis of the model service:
 
 Recovery has three safety gates:
 
-1. Only a live SDK turn with exactly one unresolved wire prompt, no foreground tools, no approvals, no replay and no Stop intent can accumulate the 150-second window. Known background launches (`run_command` background output / `IsDaemon`, `invoke_subagent`, `schedule`) remain protected independently of their launcher row. A completed launcher is not proof of a completed job. Deferred/steered SDK turns are excluded. Sleep/clock jumps rebase the clocks.
+1. Only a live SDK turn with exactly one unresolved wire prompt, no foreground tools, no approvals, no replay and no Stop intent can accumulate the silence window (default 300 seconds when enabled). Known background launches (`run_command` background output / `IsDaemon`, `invoke_subagent`, `schedule`) remain protected independently of their launcher row. A completed launcher is not proof of a completed job. Deferred/steered SDK turns are excluded. Sleep/clock jumps rebase the clocks.
 2. Cancellation uses the public `session.interrupt` API, which sends ACP `session/cancel`. After both cancellation delivery and the SDK `canceled` turn with native `cancelled` response, a deduplicated public `session.prompt` may start after exponential backoff (`2s -> 4s -> 8s`, up to 3 continuations per user round). It instructs the agent to use existing tool results and disk state and never repeat successful writes, commands or external actions. A stall with zero substantive progress after a continuation circuit-breaks immediately; exhausting 3/3 stops cleanly; user Stop/new messages or an unhealthy transport cancel the continuation plan immediately.
 3. A successful recovery emits three concise notices: cancellation requested, continuation started, and a lightweight `info` resumed-work confirmation once the model produces its first thought, text, or tool activity. Normal completion writes only `[antigravity:recovery]` logs, while abandoned recovery, zero-progress circuit breaks, and exhausted retries retain abnormal-state notices. Logs contain only allowlisted scalar metadata, never prompt/reasoning/tool contents, task IDs, paths, credentials or raw stderr. This does not sanitize every error originating in the SDK.
 
@@ -115,6 +122,11 @@ paseo plugin update better-paseo-antigravity
 1. Create a new agent in Paseo and select **Better Paseo Antigravity** as the provider.
 2. Choose your model, thinking level, and permission mode (`Full access` is available as an opt-in mode and is not enabled by default).
 3. Existing sessions created with Paseo's built-in Antigravity provider are not automatically migrated.
+4. *(Optional)* Configure **SSE stall auto-recovery** in **Settings → Plugins → Better Paseo Antigravity**:
+   - **Enable SSE stall auto-recovery** (default: **Off**): Disabled by default so long silent thinking turns in High / Extra High mode are never prematurely canceled. Toggling saves immediately.
+   - **Silence detection timeout (seconds)** (default: **300**, range **10–3600**): Shown when enabled. Counts only eligible silence with no foreground tools, approvals, replay, or observed unfinished background jobs. Increase further (e.g. `450–600`) for longer Extra High thinking turns.
+   - **Maximum continuation retries** (default: **3**, range **0–10**): Shown when enabled. Permits up to this many deduplicated continuations per user round with exponential backoff (`2s -> 4s -> 8s`) when substantive progress occurs; zero-progress retries circuit-break immediately. Set to `0` to auto-cancel without continuing.
+   - **Apply parameters**: Changes are stored per daemon host and apply immediately to active and new sessions without reloading the plugin, with explicit **Save changes**, **Reset defaults (300s / 3)**, and cross-client conflict reload.
 
 ## Important: Quota queries removed in v0.4.0
 

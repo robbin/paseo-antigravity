@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { AcpStream, AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
-import { Watch, defaults, type Limits } from "./watch";
+import { Watch, defaults, type Limits, type StallWatchConfig } from "./watch";
 import { stopProcessGroup } from "./process-group";
 import { ToolResultMapper } from "./tool-results";
 import { LoadBoundary } from "./load-boundary";
@@ -59,6 +59,7 @@ export function createTransport(
   limits: Limits = defaults,
   onFailure: (message: string) => void = () => {},
   onStall: (turnId: string) => void = () => {},
+  stallConfig?: () => StallWatchConfig,
 ): OwnedTransport {
   if (process.platform === "win32")
     throw new Error("Current process-group management only supports macOS and Linux.");
@@ -74,7 +75,7 @@ export function createTransport(
     detached: true,
     stdio: "pipe",
   });
-  const watch = new Watch(limits);
+  const watch = new Watch(limits, stallConfig);
   const toolResults = new ToolResultMapper();
   const loadBoundary = new LoadBoundary();
   let boundaryPending = false;

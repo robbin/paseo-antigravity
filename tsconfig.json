@@ -18,6 +18,7 @@
   "include": [
     "index.server.ts",
     "server",
+    "shared",
     "tests",
     "scripts"
   ]

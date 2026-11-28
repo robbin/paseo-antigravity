@@ -1,18 +1,21 @@
 {
   "name": "better-paseo-antigravity",
   "private": true,
-  "version": "0.5.2",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:live": "node --import tsx scripts/live.ts"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.17.3",
     "@types/node": "^24",
+    "@types/react": "~19.2.18",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "tsx": "4.20.6",
     "typescript": "~5.9.3",
-    "zod": "^4.4.3",
-    "tsx": "4.20.6"
+    "zod": "^4.4.3"
   }
 }

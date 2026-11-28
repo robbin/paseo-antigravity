@@ -17,7 +17,13 @@ import { vendor, options } from "./vendor";
 import { defaults, turnMetadata, type Limits } from "./watch";
 import { normalizeSessionCwds } from "./session-cwd";
 import { checkCliVersion, cliVersion } from "./cli-version";
-import { Recovery, type RecoveryOptions } from "./recovery";
+import { Recovery, type RecoveryConfig, type RecoveryOptions } from "./recovery";
+import { STALL_RECOVERY_DEFAULTS } from "../shared/settings";
+import {
+  createRecoverySettingsStore,
+  type RecoverySettingsStore,
+  type StallRecoverySettingsHandle,
+} from "./settings-store";
 
 // Capture diagnostics per request object so reused IDs cannot inherit old failures.
 interface RequestState { failure?: string; sessionId?: string }
@@ -26,6 +32,10 @@ export function provider(
   testOptions: {
     limits?: Limits;
     recovery?: RecoveryOptions;
+    settings?: StallRecoverySettingsHandle;
+    settingsStore?: RecoverySettingsStore;
+    // Test-only time scale override for converting stallTimeoutSeconds to ms.
+    stallMsFromSeconds?: (seconds: number) => number;
     closeTimeoutMs?: number;
     statusTimeoutMs?: number;
     // Explicit dependency injection for mock executables, never a daemon setting.
@@ -36,7 +46,7 @@ export function provider(
     id: "better-paseo-antigravity",
     label: "Better Paseo Antigravity",
     icon: "icon.svg",
-    description: "Reuses official CLI sign-in and configuration; guarded SSE stall cancellation and deduplicated continuation.",
+    description: "Reuses official CLI sign-in and configuration; optional SSE stall auto-recovery (off by default, configurable in plugin settings).",
     command: ["agy", "acp", "--disable-telemetry"],
     docsUrl: "https://paseo.sh/docs/supported-providers/antigravity",
     installation: {
@@ -98,6 +108,8 @@ export function provider(
                 (message) => {
                   safeFailure ??= message;
                 },
+                () => {},
+                () => ({ enabled: false, stallMs: defaults.stall! }),
               );
               probes.add(t);
               return t.stream;
@@ -159,6 +171,27 @@ export function provider(
       const emit = (e: ProviderEvent) => {
         if (!closed) for (const l of listeners) l(e);
       };
+      const store = testOptions.settingsStore ??
+        (testOptions.settings ? createRecoverySettingsStore(testOptions.settings) : undefined);
+      const ownsStore = !testOptions.settingsStore && store !== undefined;
+      if (store) await store.ready();
+      const stallMsFromSeconds = testOptions.stallMsFromSeconds ?? ((seconds: number) => seconds * 1000);
+      const getRecoveryConfig = (): RecoveryConfig => {
+        if (testOptions.recovery?.getConfig) return testOptions.recovery.getConfig();
+        if (store) {
+          const s = store.get();
+          return {
+            enabled: s.enabled,
+            stallMs: stallMsFromSeconds(s.stallTimeoutSeconds),
+            maxContinuations: s.maxContinuations,
+          };
+        }
+        return {
+          enabled: testOptions.recovery?.enabled ?? STALL_RECOVERY_DEFAULTS.enabled,
+          stallMs: testOptions.limits?.stall ?? defaults.stall!,
+          maxContinuations: testOptions.recovery?.maxContinuations ?? STALL_RECOVERY_DEFAULTS.maxContinuations,
+        };
+      };
       const recovery = new Recovery({
         transport: sessionId => transports.get(sessionId),
         // Do not enqueue an automatic prompt behind configure/open/close work in
@@ -167,7 +200,19 @@ export function provider(
           [...requests.values()].some(r => r.sessionId === sessionId),
         send: input => connection.send(input, true),
         emit,
-      }, testOptions.limits?.stall ?? defaults.stall!, testOptions.recovery);
+      }, testOptions.limits?.stall ?? defaults.stall!, {
+        ...testOptions.recovery,
+        getConfig: getRecoveryConfig,
+      });
+      const offSettings = store?.onChange(() => {
+        const now = Date.now();
+        for (const t of transports.values()) t.watch.syncRecovery(now);
+        recovery.onConfigChange();
+      });
+      const cleanupSettings = () => {
+        offSettings?.();
+        if (ownsStore) store?.dispose();
+      };
       const shim = runAcpProvider({
         id: "better-paseo-antigravity",
         label: "Better Paseo Antigravity",
@@ -203,6 +248,10 @@ export function provider(
               if (context.sessionId && transports.get(context.sessionId) === transport)
                 recovery.stall(context.sessionId, turnId);
             },
+            () => {
+              const cfg = getRecoveryConfig();
+              return { enabled: cfg.enabled, stallMs: cfg.stallMs };
+            },
           );
           if (context.sessionId) transports.set(context.sessionId, transport);
           owned.add(transport);
@@ -220,6 +269,7 @@ export function provider(
       try {
         core = await shim.connect(request);
       } catch (e) {
+        cleanupSettings();
         await Promise.allSettled([...owned].map((t) => t.close()));
         throw e;
       }
@@ -376,6 +426,7 @@ export function provider(
         close() {
           return (connectionClosing ??= (async () => {
             closed = true;
+            cleanupSettings();
             recovery.close();
             off();
             listeners.clear();

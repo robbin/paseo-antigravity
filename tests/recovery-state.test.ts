@@ -10,9 +10,11 @@ function setup(t: test.TestContext, options: RecoveryOptions = {backoffBaseMs: 0
   const sent: ProviderInput[] = [], events: ProviderEvent[] = [];
   let usable = true, safe = true, pending = false, reject = false;
   const turnStates = new Map<string, {resumed: boolean; progress: boolean}>();
+  const clearedStalls: string[] = [];
   const transport = {get usable() {return usable;}, watch: {
     canContinue: () => safe,
     suspendRecovery() {},
+    clearStallReported: (turnId: string) => clearedStalls.push(turnId),
     turnProgress: (turnId: string) => turnStates.get(turnId) ?? {resumed: false, progress: false},
   }} as unknown as OwnedTransport;
   const recovery = new Recovery({transport: () => transport, pending: () => pending,
@@ -47,7 +49,7 @@ function setup(t: test.TestContext, options: RecoveryOptions = {backoffBaseMs: 0
     turnStates.set(turnId, {resumed: state.resumed ?? cur.resumed, progress: state.progress ?? cur.progress});
   };
   t.after(() => recovery.close());
-  return {recovery, sent, events, log, start, stall, end, ack, bindContinuation, wire,
+  return {recovery, sent, events, log, start, stall, end, ack, bindContinuation, wire, clearedStalls,
     set: (state: {usable?: boolean; safe?: boolean; pending?: boolean; reject?: boolean}) => {
       usable = state.usable ?? usable; safe = state.safe ?? safe;
       pending = state.pending ?? pending; reject = state.reject ?? reject;
@@ -99,8 +101,12 @@ test("unknown/autonomous turns, queued replacements and stale generations never 
   const h = setup(t);
   h.recovery.stall("s", "unknown");
   h.start(); h.set({pending: true}); h.recovery.stall("s", "user");
+  assert.deepEqual(h.clearedStalls, ["user"], "transient pending must clear stall latch so recovery can re-check");
   h.set({pending: false}); h.start("next"); h.recovery.stall("s", "user");
   assert.equal(h.sent.length, 0);
+  // Once pending clears on the active turn, a subsequent stall triggers auto-cancel normally.
+  h.recovery.stall("s", "next");
+  assert.equal(h.sent.length, 1);
 });
 for (const action of ["none", "stop", "message", "runtime-failure"]) test(`internal continuation receipt is consumed after ${action}`, async t => {
   const h = setup(t); h.start(); const id = h.stall(); h.ack(id); h.end();
