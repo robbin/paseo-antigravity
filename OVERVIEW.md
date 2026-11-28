@@ -8,17 +8,31 @@ Both providers run the official `agy acp` CLI on top of Paseo's ACP SDK and shar
 
 | Built-in Antigravity ACP provider issue | Better Paseo Antigravity enhancement |
 | --- | --- |
-| Long-running tools or approvals killed for silence | Waits silently without no-progress notices or termination based only on silence. Completed tool calls can leave background work running; use Stop if a session appears stuck. |
+| Upstream SSE silence while TCP remains connected | After 150 seconds of eligible silence, requests cancellation and allows one anti-duplication continuation. Foreground tools, approvals, replay and observed unfinished background jobs block recovery; a second stall stops without another continuation. |
 | Hung stop/cancel requests and orphaned processes | Bounds explicit Stop delivery independently of a blocked write queue, targets only the in-flight requests, foreground tools, and approvals active at cancel time (including restored approvals without an active turn) with a 5-second fallback deadline, and runs a time-bounded graceful ACP close followed by detached POSIX process-group cleanup. Later requests never inherit an old cancel deadline. |
 | Swallowed root-cause errors on disconnect | Captures the underlying transport, watchdog, exit-code, or signal diagnostics before closing the stream so generic SDK errors do not hide the real cause. |
 | Truncated or stalled large history replays | Follows the native `session/load` boundary in `agy >= 1.5.15`, preserving wire order, fragmented UTF-8 decoding, and backpressure without waiting for stream silence. Live updates appear immediately after restore without requiring a new prompt. |
 | False timeouts after laptop sleep/wake | Detects host suspend and clock jumps (>5s timer gap), rebasing pre-sleep work (including work started in the final timer slice before suspend) while keeping fresh post-wake deadlines intact. |
-| Background tools cleared when a turn finishes | Retires tool state only on explicit tool-terminal events so background tools preserved for follow-up turns keep running. |
+| Background tools cleared when a turn finishes | Foreground tool-row tracking still retires only on explicit tool-terminal events. Separate recovery guards distinguish ordinary turn-scoped async work from live persistent daemon/cron jobs. |
 | Unverified CLI readiness or vague status errors | Provider status checks verify the `agy` CLI version (`>=1.5.15`) and perform an ACP handshake within a shared ~95-second cold-start budget, reporting recognized sign-in failures without printing authorization URLs. |
 
 ## How it works
 
-Select Better Paseo Antigravity when creating a new agent. Existing sessions created with the built-in Antigravity provider are not migrated. Models, thinking options, slash commands, skills, tool approvals, and session resume continue to use the Paseo ACP SDK. Full access mode is opt-in and disabled by default. Prompts are never resent automatically after a stall, disconnect, or cancellation.
+Select Better Paseo Antigravity when creating a new agent. Existing sessions created with the built-in Antigravity provider are not migrated. Models, thinking options, slash commands, skills, tool approvals, and session resume continue to use the Paseo ACP SDK. Full access mode is opt-in and disabled by default. The original user prompt is never automatically replayed. Only a guarded stall cancellation may start one separate, visible continuation prompt; disconnects, user Stop and errors do not trigger retries.
+
+### Why SSE recovery is needed
+
+Field investigations using `acp-server-*.log`, `daemon.log` and Mihomo's live connection table found that Google's `daily-cloudcode-pa.googleapis.com` `streamGenerateContent?alt=sse` can stop sending SSE after partial reasoning without `END_STREAM`, while TCP remains `ESTABLISHED`. The closed-source `agy` client lacks an SSE inter-chunk idle-read timeout, so `session/prompt` hangs and Paseo remains `running`. This upstream combination—not a defect originating in this plugin—motivates the default 150-second outer safety net. The plugin never calls that endpoint directly.
+
+### Three recovery gates
+
+1. Count silence only with one unresolved prompt, no foreground tools, no approvals, no replay and no user Stop. Live thought/text output restarts the window; sleep/clock jumps rebase it. `run_command` background-task output / `IsDaemon`, `invoke_subagent` and `schedule` create separate background guards, even when the launcher reports completion. SDK-deferred/steered turns are excluded.
+2. Use public `session.interrupt` → ACP `session/cancel`, retaining the 5-second cancel fallback. Wait for both delivery and the original SDK canceled turn with native `cancelled` response; then send a new public `session.prompt` at most once per user round. It directs the model to continue from existing tool outputs and disk state without repeating successful writes, commands or external actions. A second stall only cancels. User Stop, a new message or transport failure invalidates pending continuation.
+3. A successful recovery emits only two `session.notice` cards: cancellation requested and continuation started. Normal resumed output and completion are logged, not announced again; abandoned recovery and second-stall stopping retain abnormal-state notices. Structured diagnostics contain metadata only, never reasoning, tool payloads, credentials or raw stderr.
+
+Internal continuation `session.prompt_result` receipts are consumed after replacement cleanup and turn binding; the SDK's visible timeline and `session.turn` events remain intact. Host-originated receipts are still forwarded.
+
+A completed launcher is not a completed background job. Ordinary non-daemon background commands, `invoke_subagent` and one-shot schedules protect their current turn; after native `end_turn` and normal SDK completion without cancellation/replacement, the next user turn clears those scopes. Live `IsDaemon === true` or nonempty cron schedules keep transport-scoped protection until an explicit same-call numeric exit/terminal update or transport closure. History replay never creates these guards, so old jobs cannot permanently disable fresh-turn recovery. Abnormal endings do not clear pending turn scopes. Field evidence from `agy 1.5.18` shows ordinary background commands can complete by independent system callback without a same-call numeric exit update. Unreported background work and completely silent long thinking cannot be reliably distinguished from stalls. Anti-duplication instructions are not an exactly-once guarantee. The roughly 120-second quiet diagnostic remains separate and diagnostic-only. Real host/UI validation of the recovery flow remains pending.
 
 ## Setup and requirements
 

@@ -17,9 +17,10 @@ import { vendor, options } from "./vendor";
 import { defaults, turnMetadata, type Limits } from "./watch";
 import { normalizeSessionCwds } from "./session-cwd";
 import { checkCliVersion, cliVersion } from "./cli-version";
+import { Recovery } from "./recovery";
 
 // Capture diagnostics per request object so reused IDs cannot inherit old failures.
-interface RequestState { failure?: string }
+interface RequestState { failure?: string; sessionId?: string }
 
 export function provider(
   testOptions: {
@@ -34,7 +35,7 @@ export function provider(
     id: "better-paseo-antigravity",
     label: "Better Paseo Antigravity",
     icon: "icon.svg",
-    description: "复用官方 CLI 登录和配置；静默等待与可控取消。",
+    description: "复用官方 CLI 登录和配置；安全门禁下的静默中断与限次续接。",
     command: ["agy", "acp", "--disable-telemetry"],
     docsUrl: "https://paseo.sh/docs/supported-providers/antigravity",
     installation: {
@@ -157,6 +158,15 @@ export function provider(
       const emit = (e: ProviderEvent) => {
         if (!closed) for (const l of listeners) l(e);
       };
+      const recovery = new Recovery({
+        transport: sessionId => transports.get(sessionId),
+        // Do not enqueue an automatic prompt behind configure/open/close work in
+        // the SDK mutation lane: an admitted queued prompt cannot be retracted.
+        pending: sessionId => (replacements.get(sessionId)?.size ?? 0) > 0 ||
+          [...requests.values()].some(r => r.sessionId === sessionId),
+        send: input => connection.send(input, true),
+        emit,
+      }, testOptions.limits?.stall ?? defaults.stall!);
       const shim = runAcpProvider({
         id: "better-paseo-antigravity",
         label: "Better Paseo Antigravity",
@@ -188,6 +198,10 @@ export function provider(
               if (context.sessionId && !failures.has(context.sessionId))
                 failures.set(context.sessionId, message);
             },
+            turnId => {
+              if (context.sessionId && transports.get(context.sessionId) === transport)
+                recovery.stall(context.sessionId, turnId);
+            },
           );
           if (context.sessionId) transports.set(context.sessionId, transport);
           owned.add(transport);
@@ -209,6 +223,8 @@ export function provider(
         throw e;
       }
       const off = core.onEvent((e) => {
+        const wireStopReason = "sessionId" in e
+          ? transports.get(e.sessionId)?.watch.turn?.stopReason : undefined;
         const requestFailure = e.type === "request.failed"
           ? requests.get(e.requestId)?.failure : undefined;
         if ((e.type === "request.completed" || e.type === "request.failed" ||
@@ -273,7 +289,7 @@ export function provider(
                     : `本轮已结束，${t.failed ? "有前台工具执行失败" : "前台工具已完成"}，但之后没有返回正文；消息没有自动重发。`,
                 },
               });
-            watch.endTurn(e.turnId);
+            watch.endTurn(e.turnId, e.state === "completed");
           }
         }
         if (
@@ -283,24 +299,27 @@ export function provider(
         ) {
           transports.get(e.sessionId)?.watch.finishTool(e.item.callId);
         }
-        emit(e);
+        if (!recovery.event(e, wireStopReason)) emit(e);
       });
-      return {
+      const connection = {
         version: core.version,
         capabilities: core.capabilities,
-        onEvent(l) {
+        onEvent(l: (e: ProviderEvent) => void) {
           listeners.add(l);
           return () => {
             listeners.delete(l);
           };
         },
-        send(input: ProviderInput) {
+        send(input: ProviderInput, automatic = false) {
           if (closed) return Promise.reject(new Error("Provider 已关闭。"));
           const requestId = "requestId" in input && typeof input.requestId === "string"
             ? input.requestId : undefined;
           if (requestId !== undefined && requests.has(requestId))
             return Promise.reject(new Error("请求标识仍在使用中。"));
-          const reservation: RequestState = {};
+          if (!automatic) recovery.userInput(input);
+          const reservation: RequestState = {
+            sessionId: "sessionId" in input ? input.sessionId : undefined,
+          };
           // Capture identity before dispatch. Admission is async but immediate;
           // its rejection rolls back only this provisional Stop token. Request
           // completion may arrive before send().then(), so never arm in then().
@@ -356,6 +375,7 @@ export function provider(
         close() {
           return (connectionClosing ??= (async () => {
             closed = true;
+            recovery.close();
             off();
             listeners.clear();
             let timer: ReturnType<typeof setTimeout> | undefined;
@@ -388,6 +408,7 @@ export function provider(
           })());
         },
       };
+      return connection;
     },
   };
 }

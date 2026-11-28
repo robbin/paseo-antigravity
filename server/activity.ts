@@ -17,6 +17,7 @@ export class Activity {
       text: 0, thought: 0, tool: 0, approval: 0, compaction: 0 };
   }
   end() { this.live = undefined; }
+  get lastActivityAt() { return this.live?.last; }
   requestStop(now: number): number {
     const token = ++this.sequence;
     this.stops.set(token, {at: now, turnId: this.live?.turnId});

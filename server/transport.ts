@@ -18,6 +18,7 @@ export interface OwnedTransport {
   finished: Promise<void>;
   pid: number | undefined;
   watch: Watch;
+  readonly usable: boolean;
 }
 const MAX_FRAME = 16 * 1024 * 1024;
 function parse(line: string): AcpStreamMessage {
@@ -57,11 +58,12 @@ export function createTransport(
   hint: (message: string) => void,
   limits: Limits = defaults,
   onFailure: (message: string) => void = () => {},
+  onStall: (turnId: string) => void = () => {},
 ): OwnedTransport {
   if (process.platform === "win32")
     throw new Error("当前进程管理实现仅支持 macOS / Linux。");
   for (const [key, value] of Object.entries(limits)) {
-    if (key === "quietDiag" && value === undefined) continue;
+    if ((key === "quietDiag" || key === "stall") && value === undefined) continue;
     if (value === undefined || !Number.isFinite(value) || value <= 0)
       throw new Error("Watch 时间限制必须是正数。");
   }
@@ -223,7 +225,8 @@ export function createTransport(
   };
   const interval = Math.max(
     10,
-    Math.min(500, limits.startup, limits.cancel, limits.quietDiag ?? 120_000),
+    Math.min(500, limits.startup, limits.cancel, limits.quietDiag ?? 120_000,
+      limits.stall ?? defaults.stall!),
   );
   let lastTick = Date.now();
   const timer = setInterval(() => {
@@ -233,6 +236,7 @@ export function createTransport(
     lastTick = now;
     const result = watch.check(now);
     if (result.failure) fail(result.failure);
+    else if (result.stall && !closed && !failure && !ending) onStall(result.stall);
   }, interval);
   timer.unref();
   const source = new ReadableStream<AcpStreamMessage>({
@@ -358,5 +362,6 @@ export function createTransport(
     finished,
     pid: child.pid,
     watch,
+    get usable() { return !closed && !failure && !ending && !exitInfo; },
   };
 }

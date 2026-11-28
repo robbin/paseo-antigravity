@@ -2,11 +2,11 @@
   "id": "better-paseo-antigravity",
   "name": "Better Paseo Antigravity",
   "icon": "icon.png",
-  "description": "Stability-first Antigravity CLI (agy acp) provider for long sessions: reliable cancellation, process-group cleanup, sleep/wake resilience, intact history replay, and real error reporting.",
+  "description": "Stability-first Antigravity CLI (agy acp) provider: guarded 150-second SSE stall cancellation with one anti-duplication continuation, background-task protection, reliable cleanup, history replay and diagnostics.",
   "translations": {
     "zh-CN": {
       "name": "Better Paseo Antigravity",
-      "description": "专注长会话与工程稳定性的 Antigravity CLI（agy acp）Provider：可靠中断与进程组清理、防误杀长工具、休眠唤醒恢复、完整历史回放与真实错误诊断。"
+      "description": "专注长会话稳定性的 Antigravity CLI（agy acp）Provider：安全门禁下 150 秒 SSE 静默中断与至多一次防重续接，保护后台任务，保留可靠清理、休眠重算、历史回放与真实诊断。"
     }
   },
   "requirements": {

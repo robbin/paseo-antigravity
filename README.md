@@ -12,7 +12,7 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 | Failure mode | How Better Paseo Antigravity handles it |
 | --- | --- |
-| Silent stalls vs. long-running work | Waits silently without no-progress notices or silence-only termination. Completed tools can leave native background work running; use Stop when a session appears stuck. |
+| Upstream SSE silent stalls vs. legitimate waits | After 150 seconds of eligible silence, requests cancellation and permits at most one anti-duplication continuation. Foreground tools, approvals, replay and observed unfinished background jobs block recovery. Original user prompts are never replayed. |
 | Hung stop/cancel & orphaned processes | Bounds explicit Stop delivery independently of the write queue, retains a 5-second fallback deadline per canceled target, followed by time-bounded graceful ACP close and detached POSIX process-group cleanup (`SIGTERM` → 1s grace → `SIGKILL`). |
 | Cancel races & stale tool tracking | Ignores idle cancels, isolates `session/load` replay from live tracking, scopes cancel deadlines per target, and retires tools only on explicit tool-terminal events. |
 | Swallowed root-cause errors | Records transport, watchdog, exit-code, and signal failure details before closing the stream so generic SDK errors never hide the real cause. |
@@ -21,10 +21,10 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 ### Engineering Details
 
-- **Quiet waiting without premature kills**
-  - Waits silently during idle periods and quiet active turns, without inserting no-progress notices.
-  - Does not infer deadlock from silence or completed tool calls; native background work may still be running.
-  - Retains startup/control-request deadlines, explicit Stop fallback and transport-error cleanup. A silent deadlock requires manual Stop; prompts are never resent automatically.
+- Guarded SSE stall recovery
+  - Uses a default 150-second eligible inactivity window, not a total turn-duration limit. Live thought/text chunks restart the window; idle sessions, foreground tools, approvals, replay and observed unfinished background jobs stay protected.
+  - Requests cancellation through the public SDK, retaining the existing 5-second delivery/target fallback. Only a normally canceled original turn on a healthy transport can receive one new, visible anti-duplication continuation prompt; the original user prompt is never resent.
+  - A second stall only cancels and returns control to the user. Stop, new user input and connection failure invalidate pending continuation immediately. Each new user round has its own one-continuation allowance.
 - **Reliable cancellation and process-group cleanup**
   - Enforces a 5-second fallback deadline for canceled prompts, foreground tools and approvals, including restored approvals without an active turn.
   - Performs a time-bounded graceful ACP close (5-second grace) followed by detached POSIX process-group cleanup (`SIGTERM` with 1-second grace, then `SIGKILL`).
@@ -53,7 +53,9 @@ Paseo's built-in Antigravity provider can run into reliability issues during rea
 
 ## Diagnosing a quiet session
 
-Long thinking is not evidence of a deadlock. After roughly two minutes without live inbound activity or a completed local write, an active turn emits at most one `[antigravity:quiet]` log. It does not add a timeline notice, stop the task, or resend anything. Inspect plugin logs in Paseo Settings → Plugins → Logs.
+Field investigations using `acp-server-*.log`, `daemon.log` and Mihomo's live connection table identified an upstream defect: the TCP connection remains `ESTABLISHED`, but Google's `daily-cloudcode-pa.googleapis.com` `streamGenerateContent?alt=sse` can emit some reasoning and then stop sending SSE data without `END_STREAM`. The closed-source `agy` client lacks an SSE inter-chunk idle-read timeout, leaving `session/prompt` pending and Paseo showing `running`. This is the combination of Google server-side SSE silence and the missing `agy` timeout, not a bug originating in this plugin. The plugin adds an outer recovery safety net, not a repair of Google's service or a private endpoint integration.
+
+Long thinking alone is not evidence of deadlock. The existing approximately 120-second `[antigravity:quiet]` snapshot remains diagnostic-only and independent of recovery. At 150 seconds of eligible silence, the separate recovery policy requests cancellation and reports its progress through `session.notice`. Inspect plugin logs in Paseo Settings → Plugins → Logs.
 
 The snapshot reports observed state, not a diagnosis of the model service:
 
@@ -64,9 +66,17 @@ The snapshot reports observed state, not a diagnosis of the model service:
 
 `[antigravity:stop]` logs track explicit Stop requests separately. Stop now has a local request-delivery fallback (5 seconds by default, plus timer scheduling), independent of the blocked write queue. Once the cancel reaches the transport, the existing per-target cancellation deadline still applies. These phases can overlap or run in sequence, followed by process-group cleanup; this is not a promise that every Stop finishes within exactly 5 seconds. Rejected and idle Stop requests must not arm a new deadline. A prompt still queued inside the SDK, with no started turn or observed cancellable work, remains outside this new guarantee.
 
-If a session appears stuck: note the time and last visible activity, press Stop, then reopen/restore the session if the connection was closed. Check what tools already executed before explicitly asking it to continue. Sending another message is not a reliable recovery operation: it can itself queue, replace a turn, or repeat work. No prompt is automatically retried. The new logs contain only allowlisted metadata, not prompt/reasoning/tool contents or raw stderr; this does not filter every error originating in the SDK.
+Recovery has three safety gates:
 
-The reproducible fix concerns input backpressure blocking cancellation. It does not establish the cause of any particular Gemini/model/thinking-level incident. A source commit or merge does not update the plugin already loaded in the daemon.
+1. Only a live SDK turn with exactly one unresolved wire prompt, no foreground tools, no approvals, no replay and no Stop intent can accumulate the 150-second window. Known background launches (`run_command` background output / `IsDaemon`, `invoke_subagent`, `schedule`) remain protected independently of their launcher row. A completed launcher is not proof of a completed job. Deferred/steered SDK turns are excluded. Sleep/clock jumps rebase the clocks.
+2. Cancellation uses the public `session.interrupt` API, which sends ACP `session/cancel`. After both cancellation delivery and the original SDK `canceled` turn with native `cancelled` response, one new public `session.prompt` may start. It instructs the agent to use existing tool results and disk state and never repeat successful writes, commands or external actions. A second stall only stops; user Stop/new messages or an unhealthy transport cancel the continuation plan.
+3. A successful recovery emits only two notices: cancellation requested and continuation started. Normal resumed output and completion appear in `[antigravity:recovery]` logs only, while abandoned recovery and second-stall stopping retain abnormal-state notices. Logs contain only allowlisted scalar metadata, never prompt/reasoning/tool contents, task IDs, paths, credentials or raw stderr. This does not sanitize every error originating in the SDK.
+
+The wrapper consumes internal continuation `session.prompt_result` receipts after cleaning the replacement queue and binding the turn. Host-originated receipts and the SDK's visible `session.turn` / `timeline.item` events are preserved.
+
+If recovery is blocked or exhausted: note the time and last activity, press Stop if still running, and reopen/restore only if the connection closed. Check completed actions before manually continuing. Sending a new message overrides pending recovery but can itself queue or replace work. The anti-duplication prompt is a model instruction, not an exactly-once execution guarantee.
+
+Background guards have two scopes. Ordinary non-daemon background `run_command`, `invoke_subagent` and one-shot `schedule` protect the current turn. Only after native `end_turn` and normal SDK completion without cancellation/replacement does the next user turn clear them. Field evidence from `agy 1.5.18` shows such jobs can finish by independent system callback without a same-call numeric exit update. Live `IsDaemon === true` or periodic `schedule` with nonempty `CronExpression` keep transport-scoped protection until an explicit same-call numeric exit/terminal update or transport closure. History replay never creates background guards, including from old daemon/cron records; restored jobs need new live evidence. Abnormal endings do not discharge turn scopes. Unknown background work cannot be proven absent through ACP, and manual intervention may still be necessary. Fully silent thinking beyond the threshold is also indistinguishable from a stall when all gates pass. See [the design and SDK contract notes](./docs/sse-stall-recovery.md). A source change does not update the plugin already loaded in the daemon.
 
 ## Requirements
 
@@ -123,8 +133,8 @@ Google's Antigravity team has clarified that external clients are only supported
 - Commands remain executable; unknown command/skill names are left unclassified when ACP provides no provenance.
 - Does not create a custom OAuth flow, proxy, or credential store; sign in using the official `agy` CLI on the host.
 - Does not read private Antigravity SQLite databases, inboxes, or raw transcripts.
-- Never automatically resends prompts after a stall, disconnect, or cancellation.
-- Existing progress notices from older versions remain in timeline history; this version does not insert new no-progress notices.
+- Never blindly replays the original user prompt. Only guarded SSE-stall cancellation can produce one distinct anti-duplication continuation; disconnects, user Stop, errors and non-`cancelled` endings cannot.
+- Existing notices remain in timeline history. Recovery adds explicit lifecycle notices, not periodic waiting reminders. Its output and terminal events use the SDK's normal timeline/turn machinery; real desktop/mobile UI validation remains pending.
 - See [VALIDATION.md](./VALIDATION.md) for the test matrix and verification notes.
 
 ## Development
